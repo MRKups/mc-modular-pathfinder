@@ -1,0 +1,311 @@
+# Monocode plugin architecture
+
+Status: phase 1 proof, protocol v1.  
+Scope: the native GPUI app (`crates/monocode-gpui`). Mobile and the legacy
+Tauri desktop are out of scope.
+
+This document explains how plugins are discovered, executed, rendered, and
+integrated into the app. For the wire contract see [PROTOCOL.md](PROTOCOL.md);
+for usage and examples see [README.md](README.md); for the original milestones
+see [PLAN.md](PLAN.md).
+
+## 1. Shape
+
+Plugins are ordinary child processes. Monocode does not load native libraries or
+run plugin JavaScript inside the app. A plugin reads JSON-RPC messages from
+stdin, writes JSON-RPC messages to stdout, and describes its UI as a declarative
+tree that the app renders with its existing native component model.
+
+```text
+plugins/hello/
+  plugin.json                 manifest: id, command, surfaces
+  index.js                    plugin process
+
+        │  newline-delimited JSON-RPC 2.0 over stdin/stdout
+        ▼
+crates/monocode-plugin-host/  standalone runtime
+  - discovery and manifest validation
+  - process spawn, handshake, shutdown
+  - request ids, timeouts, line/tree limits
+  - surface tree cache and event routing
+  - no GPUI, no monocode-core dependency
+
+        │  HostEvent channel (mpsc)
+        ▼
+crates/monocode-gpui/src/plugin_host.rs   thin GPUI adapter
+  - PluginSurfaceHost entity
+  - sidebar rows and active-surface state
+  - native VisualView instances
+  - tree validation and handler translation
+
+        │  native elements
+        ▼
+crates/monocode-gpui/src/visuals.rs
+  - VisualView: existing native visual renderer
+  - remote mode: renders a plugin tree and forwards control events
+```
+
+The important boundary is between the runtime crate and the app. The runtime is
+headless and only depends on `serde` and `serde_json`; it can be tested without
+opening a window. The adapter is the only place that knows about GPUI, the
+native visual schema, and the shell's navigation state.
+
+## 2. Design rules
+
+- **Out of process.** One OS process per plugin. A plugin crash cannot take down
+  the app or the UI thread.
+- **Data, not code.** Plugin UI is a bounded `monocode_core::visual::Node` tree.
+  There is no HTML, CSS, JavaScript, or native widget injection.
+- **Native rendering.** Plugins inherit Monocode's typography, colors, spacing,
+  scrolling, and accessibility instead of shipping a WebView.
+- **Thin integration.** The app starts the runtime only when a plugin directory
+  exists. No plugin directory means no plugin process and no behavior change.
+- **Language agnostic.** `command` is an argv array. Any executable that speaks
+  the protocol can be a plugin; the examples use Node.js for iteration speed.
+- **Runtime neutral.** The manifest and UI contract can later be served by a
+  WASM host without changing plugin-authored UI trees.
+
+## 3. Components
+
+### 3.1 `monocode-plugin-host`
+
+A standalone crate with three modules:
+
+| File | Responsibility |
+|---|---|
+| `src/manifest.rs` | Find `plugin.json`, reject malformed manifests, validate ids, commands, `cwd`, and surfaces. |
+| `src/protocol.rs` | Wire types, JSON-RPC framing, protocol version, line/tree size limits. |
+| `src/host.rs` | Spawn and supervise processes, handshake, read stdout/stderr, cache trees, route events, shut down. |
+| `tests/host.rs` | End-to-end test with a real child process (`src/bin/test-plugin.rs`). |
+
+`PluginRuntime` is the public handle. `start_with_options` discovers and spawns
+plugins, then returns immediately with an event receiver. Each plugin gets a
+supervisor thread for the handshake and reader threads for stdout and stderr.
+The runtime never waits for a plugin on the GPUI thread.
+
+### 3.2 GPUI adapter
+
+`crates/monocode-gpui/src/plugin_host.rs` owns `PluginSurfaceHost`:
+
+- starts the runtime from `Shell` when a plugin directory is configured;
+- drains `HostEvent`s on a 40 ms timer and applies them on the GPUI thread;
+- creates one `VisualView` per `(plugin, surface)`;
+- keeps the last tree per surface;
+- renders the active plugin surface and its header;
+- builds the sidebar rows;
+- maps plugin handler names to the native schema's numeric callback ids and
+  maps events back.
+
+`crates/monocode-gpui/src/visuals.rs` gained an additive `VisualView::remote`
+mode. Existing QuickJS transcript visuals still use the original script mode.
+
+### 3.3 Shell integration
+
+`crates/monocode-gpui/src/shell.rs` and its submodules only know about the
+adapter, not the protocol:
+
+| Change | Purpose |
+|---|---|
+| `Shell::plugin_host: Option<Entity<PluginSurfaceHost>>` | Present only when plugins are configured. |
+| `Shell::open_plugin_surface` | Takes over the workspace body and closes app views, search, previews, menus, settings, and Monos. |
+| `Shell::leave_plugin_surface` | Closes the active plugin surface when normal navigation resumes. |
+| `Shell::plugin_surface_active` | Tells the rest of the shell which page owns the body. |
+| `workspace_content` | Renders the plugin body and keeps the project tools panel beside it. |
+| `plugin_navigation` | Appends plugin rows to the main sidebar navigation. |
+| `active_title_tab` | Returns `None` while a plugin page is active. |
+| Sidebar session rows | Suppress the session's active highlight while a plugin page is active. |
+
+### 3.4 Asset source
+
+The plugin badge uses the fallback icon `plug` in
+`crates/monocode-gpui/src/assets.rs`. The plugin's own leading icon is resolved
+by `plugin_icon`, with `sparkles` as the default.
+
+## 4. Lifecycle
+
+### 4.1 Discovery and gating
+
+`plugin_directory` in the adapter chooses the root:
+
+1. `MONOCODE_PLUGIN_DIR` when set;
+2. otherwise `<app-data-dir>/plugins`, when that directory exists.
+
+The runtime scans for `plugin.json` in the root itself, or in each immediate
+child directory. A broken manifest produces a discovery error but does not stop
+other plugins. With no directory, `Shell::plugin_host` stays `None` and the app
+behaves exactly as before.
+
+### 4.2 Start and handshake
+
+For each valid manifest:
+
+1. The runtime spawns `command` with the manifest `cwd` (relative to the plugin
+   directory) and piped stdin/stdout/stderr.
+2. It sends `initialize` with the protocol version, app version, data directory,
+   and log directory.
+3. The plugin responds within five seconds with an optional protocol version and
+   an optional replacement list of surfaces.
+4. On success the adapter receives `Ready`; on failure it receives `Offline` and
+   the process is killed.
+
+Startup is asynchronous. The window is not blocked by a slow plugin.
+
+### 4.3 Open and render
+
+When the user clicks a plugin row:
+
+1. The shell closes other workspace surfaces and tells the adapter to open the
+   `(plugin, surface)` key.
+2. The adapter sends `ui.open`.
+3. The plugin replies with `ui.set` containing a native UI tree, or with a tree
+   at any later point.
+4. The adapter deserializes the tree into `Node`, rewrites handler names to
+   numeric ids, validates it, and updates the surface's `VisualView`.
+5. The shell renders the plugin page in the workspace body and keeps the
+   project tools panel available on the right.
+
+The host caches the last tree even while the surface is closed, so a plugin can
+continue work in the background and have a current tree ready when reopened.
+
+### 4.4 Events
+
+Native controls fire through the `VisualView` callback. The adapter:
+
+1. looks up the numeric callback id in the surface's handler map;
+2. restores the plugin's original handler string;
+3. sends `ui.event` with `{surface, handler, value}` to the owning process.
+
+The plugin updates its own state and may send a new `ui.set`. The app never
+interprets plugin state.
+
+### 4.5 Close and quit
+
+- Navigating to a session, app view, search, settings, or another project sends
+  `ui.close` and removes the plugin page. The process stays alive.
+- The plugin page's close button does the same.
+- On app quit, the runtime sends `shutdown` to every process, waits up to two
+  seconds per plugin, then kills anything still running. A `Drop` fallback also
+  reaps children if the adapter is released early.
+- A crashed or offline plugin stays in the sidebar with an offline badge and
+  shows an offline/error state instead of taking down the app. Automatic
+  restart with backoff is deferred.
+
+## 5. UI contribution model
+
+### 5.1 Surfaces
+
+Each manifest surface can declare `placements`. Phase 1 renders `sidebar`
+placements. `tab` is accepted for forward compatibility but is not shown yet.
+
+Each sidebar surface becomes one row. A plugin with two sidebar surfaces gets
+two rows. Rows are sorted by label (case-insensitive, then by stable key) and
+appended after the built-in navigation items. Only one plugin surface is active
+at a time; opening another sends `ui.close` to the previous surface.
+
+Plugin rows intentionally have no separate section header. They use the same
+row styling as Inbox, Notes, and Automations, with:
+
+- the manifest icon on the left;
+- the surface title;
+- an `offline` label when needed;
+- a small `plug` badge on the right.
+
+The badge and `aria_description("Plugin")` make plugin rows identifiable without
+creating a separate visual group.
+
+### 5.2 Page ownership
+
+A plugin page is an independent workspace page:
+
+- the sidebar plugin row is selected;
+- no session or app title tab is selected, even though the previously active
+  session remains open;
+- session rows in the sidebar drop their active highlight;
+- the previously active session is preserved and becomes selected again when
+  the plugin page closes;
+- the right project tools panel remains functional beside the plugin page.
+
+This is implemented through `plugin_surface_active`, which reads the adapter's
+active state. The shell does not persist plugin state in `Workspace` or
+`TitleTab`, so existing workspace files remain compatible.
+
+### 5.3 Handler translation
+
+The native visual schema reserves handlers for digit/colon callback ids.
+Plugins get readable strings such as `"click"` or `"toggle-task"`. The adapter
+rewrites each control handler to a unique numeric id for the render tree and
+keeps a per-surface `numeric id -> plugin handler` map. Events are translated
+back before leaving the app. Plugins never see the native ids.
+
+## 6. State, storage, and logging
+
+- The plugin owns its own process state. The app stores only the last rendered
+  tree per surface.
+- `initialize` passes `dataDir` and `logDir`. A plugin can persist files in the
+  app data directory itself; there is no host key-value store yet.
+- Plugin stderr is appended to
+  `<app-data-dir>/plugin-logs/<plugin-id>.log` when a data directory exists.
+  Lines are truncated to 8 KiB.
+- `log` notifications are surfaced as host log events and printed to the app's
+  stderr. They do not grant any host capability.
+- UI trees are limited to 1 MiB serialized and 512 validated nodes. Transport
+  lines are limited to 2 MiB. Invalid trees are rejected and the previous tree
+  stays on screen.
+
+## 7. Trust model
+
+Plugins are trusted local programs, not a security sandbox. A plugin process
+runs with the user's permissions and can read files, run commands, and use the
+network. Process isolation provides crash and UI isolation only.
+
+`permissions` exists in the manifest for forward compatibility but protocol v1
+does not enforce it. There are no host APIs for sessions, files, git, network,
+or notifications yet. Adding those APIs requires a permission model and a clear
+capability boundary.
+
+## 8. Testing
+
+| Layer | Coverage |
+|---|---|
+| `crates/monocode-plugin-host/tests/host.rs` | Discovery, real child process, handshake, open, event round-trip, shutdown, no orphan. |
+| `crates/monocode-plugin-host/src/host.rs` | Framing and oversized-line limits. |
+| `crates/monocode-plugin-host/src/manifest.rs` | Manifest and surface validation. |
+| `crates/monocode-gpui/src/plugin_host.rs` | Sidebar entries, open/render/close, handler rewriting. |
+| `crates/monocode-gpui/src/shell/sidebar_list.rs` | Clicking a plugin row opens the surface, deselects title tabs, shows the plug badge, and keeps the right panel rendered. |
+| `crates/monocode-gpui/src/visuals.rs` | Remote-tree event forwarding and tree replacement. |
+| `scripts/dev-native.test.mjs` | Native dev runner, including the adaptive Cargo job formula. |
+
+Run the proof manually with:
+
+```bash
+MONOCODE_PLUGIN_DIR="$PWD/plugins" npm run native:dev
+```
+
+## 9. Boundaries and next steps
+
+Implemented in phase 1:
+
+- process discovery, spawning, handshake, shutdown, and crash visibility;
+- native declarative UI with interaction and live updates;
+- sidebar rows, full-content plugin pages, title-tab de-selection, and a
+  functional right project tools panel;
+- file-backed plugin state and stderr logs;
+- examples covering controls, live updates, tables, charts, and a component
+  gallery.
+
+Deferred:
+
+- WASM or any in-process runtime;
+- plugin installation, updates, signing, or a marketplace;
+- host APIs and enforced permissions;
+- plugin-contributed title tabs (manifest placement is accepted but not shown);
+- automatic restart with backoff;
+- plugin-to-plugin communication;
+- mobile and legacy Tauri integration.
+
+The next capability layer should be small and permission-aware. The most useful
+first additions are a project/workspace context in `initialize`/`ui.open`, plus
+host calls for opening files and URLs, writing to the clipboard, and a
+plugin-scoped key-value store. That would let read-only tools such as a git
+dashboard, test runner, or code search plugin become actionable without
+weakening the current process boundary.

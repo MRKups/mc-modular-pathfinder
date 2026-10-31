@@ -228,6 +228,9 @@ fn icon_body(path: &str) -> Option<&'static str> {
             "<path d='M14 4H6a2 2 0 0 0-2 2v8'/><rect x='8' y='8' width='12' height='12' rx='2'/>"
         }
         "code" => "<path d='m8 7-5 5 5 5m8-10 5 5-5 5m-3-14-2 18'/>",
+        "plug" => {
+            "<path d='M12 22v-5'/><path d='M9 8V2'/><path d='M15 8V2'/><path d='M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z'/>"
+        }
         "minus" => "<path d='M6 12h12'/>",
         "pencil-line" => "<path d='M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L9 17l-4 1 1-4Z'/>",
         "circle-dashed" => {

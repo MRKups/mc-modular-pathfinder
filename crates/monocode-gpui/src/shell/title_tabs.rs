@@ -98,6 +98,11 @@ impl Shell {
     }
 
     pub(super) fn active_title_tab(&self, cx: &App) -> Option<TitleTab> {
+        // A plugin surface is its own page. The session behind it stays open,
+        // but no title tab is selected while the plugin owns the workspace.
+        if self.plugin_surface_active(cx) {
+            return None;
+        }
         if let Some(view) = self.active_app_view {
             return Some(TitleTab::App(view));
         }

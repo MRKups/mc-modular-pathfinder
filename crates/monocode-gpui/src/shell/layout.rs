@@ -736,21 +736,36 @@ impl Shell {
                 .overflow_hidden()
                 .child(settings.clone());
         }
-        if let Some(plugins) = &self.plugin_host
-            && plugins.read(cx).is_active()
-        {
+        let plugin_surface = self
+            .plugin_host
+            .clone()
+            .filter(|host| host.read(cx).is_active());
+        let panel: Option<Entity<RightPanel>> = self
+            .right_panel
+            .clone()
+            .filter(|_| right_shown && self.settings.is_none());
+        if let Some(plugins) = plugin_surface {
             return div()
                 .flex_1()
                 .min_h_0()
                 .min_w_0()
                 .flex()
                 .overflow_hidden()
-                .child(plugins.clone());
+                .child(self.background_card.probe())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .h_full()
+                        .flex()
+                        .overflow_hidden()
+                        .child(plugins),
+                )
+                .when_some(panel, |d, panel| {
+                    d.child(self.right_panel_frame(panel, right_width, full, window, cx))
+                });
         }
-        let panel: Option<Entity<RightPanel>> = self
-            .right_panel
-            .clone()
-            .filter(|_| right_shown && self.settings.is_none());
         div()
             .flex_1()
             .min_h_0()

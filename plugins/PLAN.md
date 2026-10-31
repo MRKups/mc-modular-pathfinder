@@ -4,6 +4,8 @@ Status: phase 1 implemented (proof)
 Branch: `kups/mc-plugins`  
 Scope: native GPUI app + `monocode-core`; mobile and Tauri/legacy desktop are out of scope.
 
+Current architecture: [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## 1. What we are building
 
 A small, standalone plugin system for Monocode where:
@@ -204,8 +206,9 @@ only renders the last tree and reports control events.
 
 - `PluginSurfaceHost` (new GPUI entity) owns the runtime, surface views, active
   surface, and plugin errors.
-- `sidebar_navigation()` appends a “Plugins” section built from manifests.
-  Each row uses the same visual language as Inbox/Notes/Automations.
+- `sidebar_navigation()` appends plugin rows directly to the main navigation,
+  built from manifests. Each row uses the same visual language as
+  Inbox/Notes/Automations and carries a small plug badge on the right.
 - Clicking a plugin row calls `PluginSurfaceHost::open(surface_id)` and notifies
   the Shell.
 - `Shell::workspace_content()` renders the active plugin surface before the
@@ -281,7 +284,7 @@ Touched existing code:
 | `crates/monocode-gpui/Cargo.toml` | add workspace member + `monocode-plugin-host` dependency |
 | `crates/monocode-gpui/src/main.rs` | add `mod plugin_host;` |
 | `crates/monocode-gpui/src/shell.rs` | one field, one init, one subscription, one render branch, close calls in navigation |
-| `crates/monocode-gpui/src/shell/sidebar_list.rs` | append plugin section and click handling |
+| `crates/monocode-gpui/src/shell/sidebar_list.rs` | append plugin rows and click handling |
 | `crates/monocode-gpui/src/visuals.rs` | remote-tree mode (additive) |
 
 **No changes to `monocode-core`, `Store`, providers, settings, or persisted
@@ -323,7 +326,7 @@ an event, receives an updated tree, and shuts down with no orphan process.
 - [x] Add `VisualView` remote-tree mode and tests.
 - [x] Build `PluginSurfaceHost` entity.
 - [x] Start the runtime from `Shell` and receive host events on the GPUI thread.
-- [x] Add the sidebar “Plugins” section.
+- [x] Add plugin rows to the main sidebar navigation with a plug badge.
 - [x] Render the active plugin surface in `workspace_content`.
 - [x] Add close-on-navigation behavior.
 - [x] Build the `hello` Node plugin: sidebar item, text, input, button, counter.
@@ -422,7 +425,6 @@ MONOCODE_PLUGIN_DIR="$PWD/plugins" npm run native:dev
 ## 11. Open questions
 
 - Should plugin discovery also scan a project-local `.monocode/plugins` directory?
-- Should the sidebar section be at the bottom, under Apps, or in a separate rail?
 - Do we want plugin UI to remember its last surface across restarts in phase 1?
 - What is the first host API we expose (project path, current session, notifications)?
 - Should plugins be enabled per-project or globally?

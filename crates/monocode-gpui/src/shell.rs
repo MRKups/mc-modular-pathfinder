@@ -4081,6 +4081,9 @@ impl Shell {
         self.leave_app_search(cx);
         self.close_preview(cx);
         self.close_menu(cx);
+        self.selected_sessions.clear();
+        self.selection_anchor = None;
+        self.sidebar_target = None;
         if self.settings.is_some() {
             self.close_settings(window, cx);
         }
@@ -6026,7 +6029,8 @@ impl Shell {
                 self.selected_sessions.contains(c)
                     || (self.workspace.active == Some(*c)
                         && !self.mono_active(cx)
-                        && !self.app_view_open())
+                        && !self.app_view_open()
+                        && !self.plugin_surface_active(cx))
             }),
             _ => false,
         };
@@ -6043,7 +6047,8 @@ impl Shell {
         let active = self.selected_sessions.contains(&id)
             || (self.workspace.active == Some(id)
                 && !self.mono_active(cx)
-                && !self.app_view_open());
+                && !self.app_view_open()
+                && !self.plugin_surface_active(cx));
         let anchor = self
             .session_row_bounds
             .get(&id)
@@ -7594,6 +7599,7 @@ impl Shell {
     fn tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let viewport = self.tabs_width(window, cx);
         let tabs = self.visible_tabs(cx);
+        let plugin_active = self.plugin_surface_active(cx);
         let count = tabs.len();
         let insert = self.pane_drag.as_ref().and_then(|d| d.insert);
         let reduced = cx.reduce_motion();
@@ -7766,7 +7772,8 @@ impl Shell {
                 let active = self.workspace.active_tab() == Some(id)
                     && !self.app_view_open()
                     && !self.mono_active(cx)
-                    && self.app_search.is_none();
+                    && self.app_search.is_none()
+                    && !plugin_active;
                 // The press itself redraws the strip to arm tab dragging.
                 // Keep its ink stable until that press is released, even if
                 // hover hitboxes are being replaced during that redraw.

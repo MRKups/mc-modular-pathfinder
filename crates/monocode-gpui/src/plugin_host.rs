@@ -11,7 +11,7 @@ use crate::{
     visuals::{RemoteEvent, VisualView},
 };
 use gpui::{
-    AnyElement, Context, Entity, FontWeight, IntoElement, ParentElement, Render, Role,
+    AnyElement, App, Context, Entity, FontWeight, IntoElement, ParentElement, Render, Role,
     SharedString, Styled, Task, Window, div, prelude::*, px,
 };
 use monocode_core::visual::Node;
@@ -121,6 +121,7 @@ fn plugin_icon(name: &str) -> &'static str {
         "search" => "search",
         "terminal" => "terminal",
         "git" => "git",
+        "plug" => "plug",
         _ => "sparkles",
     }
 }
@@ -599,7 +600,14 @@ impl Render for PluginSurfaceHost {
 }
 
 impl crate::shell::Shell {
-    pub(crate) fn plugin_navigation(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// True while a plugin surface owns the workspace body.
+    pub(crate) fn plugin_surface_active(&self, cx: &App) -> bool {
+        self.plugin_host
+            .as_ref()
+            .is_some_and(|host| host.read(cx).is_active())
+    }
+
+    pub(crate) fn plugin_navigation(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let (entries, status) = self.plugin_host.as_ref().map_or_else(
             || (Vec::new(), None),
             |host| {
@@ -607,18 +615,7 @@ impl crate::shell::Shell {
                 (host.sidebar_entries(), host.status_message())
             },
         );
-        if entries.is_empty() && status.is_none() {
-            return None;
-        }
-        let mut section = div().w_full().pt(px(6.)).flex().flex_col().gap_px().child(
-            div()
-                .px_2()
-                .pb_1()
-                .text_size(px(11.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(content(0.35))
-                .child("Plugins"),
-        );
+        let mut rows = Vec::new();
         for entry in entries {
             let selected = entry.selected;
             let offline = entry.offline;
@@ -627,12 +624,14 @@ impl crate::shell::Shell {
             let plugin_id = entry.plugin_id.clone();
             let surface_id = entry.surface_id.clone();
             let debug_id = format!("sidebar-plugin-{plugin_id}-{surface_id}");
-            section = section.child(
+            let badge_debug_id = format!("sidebar-plugin-badge-{plugin_id}-{surface_id}");
+            rows.push(
                 div()
                     .id(SharedString::from(format!("plugin-nav-{key}")))
                     .debug_selector(move || debug_id.clone())
                     .role(Role::Button)
                     .aria_label(entry.label.clone())
+                    .aria_description("Plugin")
                     .aria_selected(selected)
                     .cursor_pointer()
                     .h(px(32.))
@@ -657,22 +656,35 @@ impl crate::shell::Shell {
                                 .child("offline"),
                         )
                     })
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("plugin-badge-{key}")))
+                            .debug_selector(move || badge_debug_id.clone())
+                            .flex_shrink_0()
+                            .child(icon("plug", 12.).text_color(content(if selected {
+                                0.6
+                            } else {
+                                0.35
+                            }))),
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_plugin_surface(plugin_id.clone(), surface_id.clone(), window, cx);
-                    })),
+                    }))
+                    .into_any_element(),
             );
         }
         if let Some(status) = status {
-            section = section.child(
+            rows.push(
                 div()
                     .px_2()
                     .py_1()
                     .text_size(px(11.))
                     .text_color(content(0.4))
-                    .child(status),
+                    .child(status)
+                    .into_any_element(),
             );
         }
-        Some(section.into_any_element())
+        rows
     }
 }
 

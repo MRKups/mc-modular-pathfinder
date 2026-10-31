@@ -895,11 +895,24 @@ mod tests {
                 cx.notify();
             })
             .unwrap();
+        let previous = window
+            .update(cx, |shell, _, cx| shell.active_title_tab(cx))
+            .unwrap();
+        assert!(
+            previous.is_some(),
+            "the fixture should start on a selected title tab"
+        );
         let visual = &mut gpui::VisualTestContext::from_window(window.into(), cx);
         visual.run_until_parked();
         let row = visual
             .debug_bounds("sidebar-plugin-com.test.adapter-main")
             .expect("plugin surface should add a sidebar row");
+        assert!(
+            visual
+                .debug_bounds("sidebar-plugin-badge-com.test.adapter-main")
+                .is_some(),
+            "plugin rows should show the plug badge"
+        );
         visual.simulate_click(row.center(), Default::default());
         visual.run_until_parked();
         window
@@ -910,12 +923,40 @@ mod tests {
                         .as_ref()
                         .is_some_and(|host| host.read(cx).is_active())
                 );
+                assert!(
+                    shell.plugin_surface_active(cx),
+                    "the plugin should own the workspace body"
+                );
+                assert!(
+                    shell.active_title_tab(cx).is_none(),
+                    "no title tab should stay selected behind a plugin page"
+                );
             })
             .unwrap();
         assert!(
             visual.debug_bounds("visual-button-root/1").is_some(),
             "clicking the sidebar row should render the plugin's native tree"
         );
+        window
+            .update(visual, |shell, window, cx| {
+                shell.workspace.right_panel_open = true;
+                shell.ensure_right_panel(window, cx);
+                shell.sync_right_panel(cx);
+                cx.notify();
+            })
+            .unwrap();
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("right-panel-frame").is_some(),
+            "the project tools panel should render beside a plugin page"
+        );
+        window
+            .update(visual, |shell, _, cx| {
+                shell.leave_plugin_surface(cx);
+                assert!(!shell.plugin_surface_active(cx));
+                assert_eq!(shell.active_title_tab(cx), previous);
+            })
+            .unwrap();
     }
 
     #[gpui::test]

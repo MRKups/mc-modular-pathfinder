@@ -75,6 +75,14 @@ pub enum HostEvent {
         plugin_id: String,
         surface_id: String,
     },
+    /// A plugin asked the app for something. The adapter calls its host API
+    /// and replies with `PluginRuntime::respond`.
+    Call {
+        plugin_id: String,
+        id: u64,
+        method: String,
+        params: Value,
+    },
     Offline {
         plugin_id: String,
         reason: String,
@@ -281,6 +289,43 @@ impl PluginRuntime {
                 "value": value,
             }),
         );
+    }
+
+    /// Reply to a plugin's host request. Errors use JSON-RPC's implementation
+    /// defined server-error range.
+    pub fn respond(&self, plugin_id: &str, id: u64, result: Result<Value, String>) {
+        let line = match result {
+            Ok(value) => protocol::response_line(id, value),
+            Err(message) => protocol::error_line(id, -32000, &message),
+        };
+        let line = match line {
+            Ok(line) => line,
+            Err(error) => {
+                self.inner.send(HostEvent::Error {
+                    plugin_id: Some(plugin_id.to_string()),
+                    message: error,
+                });
+                return;
+            }
+        };
+        let process = self
+            .inner
+            .plugins
+            .lock()
+            .ok()
+            .and_then(|plugins| plugins.get(plugin_id).cloned());
+        let Some(process) = process else {
+            return;
+        };
+        if !process.alive.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Err(error) = process.write_line(&line) {
+            self.inner.send(HostEvent::Error {
+                plugin_id: Some(plugin_id.to_string()),
+                message: error,
+            });
+        }
     }
 
     fn notify(&self, plugin_id: &str, method: &str, params: Value) {
@@ -639,6 +684,7 @@ fn read_stdout(
             }
             continue;
         }
+        let request_id = message.id;
         let method = message.method.unwrap_or_default();
         let params = message.params.unwrap_or(Value::Null);
         match method.as_str() {
@@ -727,10 +773,18 @@ fn read_stdout(
                     message,
                 });
             }
-            other => inner.send(HostEvent::Error {
-                plugin_id: Some(plugin_id.clone()),
-                message: format!("Unsupported plugin method: {other}"),
-            }),
+            other => match request_id {
+                Some(id) => inner.send(HostEvent::Call {
+                    plugin_id: plugin_id.clone(),
+                    id,
+                    method: other.to_string(),
+                    params,
+                }),
+                None => inner.send(HostEvent::Error {
+                    plugin_id: Some(plugin_id.clone()),
+                    message: format!("Unsupported plugin method: {other}"),
+                }),
+            },
         }
     }
 }

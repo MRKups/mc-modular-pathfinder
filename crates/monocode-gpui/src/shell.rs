@@ -77,6 +77,7 @@ use monocode_core::{provider::Kind, store::Session};
 use session_groups::local_reminder_label;
 use std::{
     collections::{HashMap, HashSet},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -1155,7 +1156,9 @@ impl Shell {
             render_passes: 0,
         };
         if let Some(location) = plugin_location {
-            let host = cx.new(|cx| crate::plugin_host::PluginSurfaceHost::new(location, cx));
+            let workspace_root = PathBuf::from(&this.workspace.project);
+            let host = cx
+                .new(|cx| crate::plugin_host::PluginSurfaceHost::new(location, workspace_root, cx));
             this.observations.push(cx.observe(&host, |this, _, cx| {
                 this.invalidate_chrome(cx);
                 cx.notify();
@@ -4091,7 +4094,11 @@ impl Shell {
             monos.update(cx, |monos, cx| monos.close(cx));
         }
         self.navigation_revision += 1;
-        host.update(cx, |host, cx| host.open(&plugin_id, &surface_id, cx));
+        let workspace_root = PathBuf::from(&self.workspace.project);
+        host.update(cx, |host, cx| {
+            host.set_workspace_root(workspace_root);
+            host.open(&plugin_id, &surface_id, cx);
+        });
         self.update_chat_visibility(cx);
         self.sync_right_panel(cx);
         self.invalidate_chrome(cx);

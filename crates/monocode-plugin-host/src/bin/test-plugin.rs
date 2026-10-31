@@ -9,6 +9,7 @@ fn main() {
     let mut output = stdout.lock();
     let mut count = 0u64;
     let mut name = String::new();
+    let mut host_root = String::new();
 
     for line in stdin.lock().lines() {
         let Ok(line) = line else {
@@ -20,6 +21,16 @@ fn main() {
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        if message.get("method").is_none() {
+            if message["id"].as_u64() == Some(99) {
+                host_root = message["result"]["root"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                send_tree(&mut output, &count, &name, &host_root);
+            }
+            continue;
+        }
         match message["method"].as_str().unwrap_or_default() {
             "initialize" => {
                 respond(
@@ -35,9 +46,9 @@ fn main() {
                         }]
                     }),
                 );
-                send_tree(&mut output, &count, &name);
+                request_workspace(&mut output);
             }
-            "ui.open" => send_tree(&mut output, &count, &name),
+            "ui.open" => send_tree(&mut output, &count, &name, &host_root),
             "ui.event" => {
                 match message["params"]["handler"].as_str().unwrap_or_default() {
                     "click" => count += 1,
@@ -49,12 +60,23 @@ fn main() {
                     }
                     _ => {}
                 }
-                send_tree(&mut output, &count, &name);
+                send_tree(&mut output, &count, &name, &host_root);
             }
             "shutdown" => break,
             _ => {}
         }
     }
+}
+
+fn request_workspace(output: &mut impl Write) {
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 99,
+        "method": "workspace.info",
+        "params": {}
+    });
+    let _ = writeln!(output, "{request}");
+    let _ = output.flush();
 }
 
 fn respond(output: &mut impl Write, request: &Value, result: Value) {
@@ -67,7 +89,7 @@ fn respond(output: &mut impl Write, request: &Value, result: Value) {
     let _ = output.flush();
 }
 
-fn send_tree(output: &mut impl Write, count: &u64, name: &str) {
+fn send_tree(output: &mut impl Write, count: &u64, name: &str, host_root: &str) {
     let message = json!({
         "jsonrpc": "2.0",
         "method": "ui.set",
@@ -92,6 +114,12 @@ fn send_tree(output: &mut impl Write, count: &u64, name: &str) {
                     {
                         "kind": "text",
                         "text": format!("Name: {name}"),
+                        "size": "body",
+                        "color": "muted"
+                    },
+                    {
+                        "kind": "text",
+                        "text": format!("Host: {host_root}"),
                         "size": "body",
                         "color": "muted"
                     },

@@ -64,6 +64,9 @@ native visual schema, and the shell's navigation state.
   the protocol can be a plugin; the examples use Node.js for iteration speed.
 - **Runtime neutral.** The manifest and UI contract can later be served by a
   WASM host without changing plugin-authored UI trees.
+- **Fixed host surface.** Plugins get app data only through the explicit
+  method table in `plugin_host/api.rs`, not by reaching into shell or store
+  internals.
 
 ## 3. Components
 
@@ -75,7 +78,7 @@ A standalone crate with three modules:
 |---|---|
 | `src/manifest.rs` | Find `plugin.json`, reject malformed manifests, validate ids, commands, `cwd`, and surfaces. |
 | `src/protocol.rs` | Wire types, JSON-RPC framing, protocol version, line/tree size limits. |
-| `src/host.rs` | Spawn and supervise processes, handshake, read stdout/stderr, cache trees, route events, shut down. |
+| `src/host.rs` | Spawn and supervise processes, handshake, read stdout/stderr, cache trees, route UI events and host calls, shut down. |
 | `tests/host.rs` | End-to-end test with a real child process (`src/bin/test-plugin.rs`). |
 
 `PluginRuntime` is the public handle. `start_with_options` discovers and spawns
@@ -94,7 +97,9 @@ The runtime never waits for a plugin on the GPUI thread.
 - renders the active plugin surface and its header;
 - builds the sidebar rows;
 - maps plugin handler names to the native schema's numeric callback ids and
-  maps events back.
+  maps events back;
+- dispatches host requests through `plugin_host/api.rs` and replies through the
+  runtime.
 
 `crates/monocode-gpui/src/visuals.rs` gained an additive `VisualView::remote`
 mode. Existing QuickJS transcript visuals still use the original script mode.
@@ -178,7 +183,24 @@ Native controls fire through the `VisualView` callback. The adapter:
 The plugin updates its own state and may send a new `ui.set`. The app never
 interprets plugin state.
 
-### 4.5 Close and quit
+### 4.5 Host calls
+
+A plugin message with an `id` and a method name is a host request. The runtime
+emits `HostEvent::Call`; the adapter routes it through `HostApi`; then
+`PluginRuntime::respond` writes the JSON-RPC result or error back to the plugin.
+
+The current surface is deliberately small:
+
+- `workspace.info` returns the active project root and name;
+- `storage.get` and `storage.set` read and write a plugin-scoped JSON store.
+
+There is no separate host API version. Methods are additive; unknown methods
+return an error. App modules expose normal functions, and the single match in
+`plugin_host/api.rs` is the only place that knows plugin method names. Current
+methods are local and fast; a future slow method should hand work to a
+background task and reply when it finishes. See [HOST_API.md](HOST_API.md).
+
+### 4.6 Close and quit
 
 - Navigating to a session, app view, search, settings, or another project sends
   `ui.close` and removes the plugin page. The process stays alive.
@@ -241,8 +263,9 @@ back before leaving the app. Plugins never see the native ids.
 
 - The plugin owns its own process state. The app stores only the last rendered
   tree per surface.
-- `initialize` passes `dataDir` and `logDir`. A plugin can persist files in the
-  app data directory itself; there is no host key-value store yet.
+- `initialize` passes `dataDir` and `logDir`. The supported plugin-scoped store
+  is `<app-data-dir>/plugin-data/<plugin-id>/storage.json`, reached through
+  `storage.get` and `storage.set`.
 - Plugin stderr is appended to
   `<app-data-dir>/plugin-logs/<plugin-id>.log` when a data directory exists.
   Lines are truncated to 8 KiB.
@@ -256,21 +279,25 @@ back before leaving the app. Plugins never see the native ids.
 
 Plugins are trusted local programs, not a security sandbox. A plugin process
 runs with the user's permissions and can read files, run commands, and use the
-network. Process isolation provides crash and UI isolation only.
+network. It also receives the app data directory at startup. Process isolation
+provides crash and UI isolation only; the host API is a contract, not an
+enforcement boundary.
 
 `permissions` exists in the manifest for forward compatibility but protocol v1
-does not enforce it. There are no host APIs for sessions, files, git, network,
-or notifications yet. Adding those APIs requires a permission model and a clear
-capability boundary.
+does not enforce it. The current host API exposes workspace metadata and
+plugin-scoped storage only; there are no APIs for sessions, files, git, network,
+or notifications yet. Adding those requires deciding what each plugin may see,
+even if enforcement remains a trusted-plugin contract for now.
 
 ## 8. Testing
 
 | Layer | Coverage |
 |---|---|
-| `crates/monocode-plugin-host/tests/host.rs` | Discovery, real child process, handshake, open, event round-trip, shutdown, no orphan. |
+| `crates/monocode-plugin-host/tests/host.rs` | Discovery, real child process, handshake, open, host-call round-trip, event round-trip, shutdown, no orphan. |
 | `crates/monocode-plugin-host/src/host.rs` | Framing and oversized-line limits. |
 | `crates/monocode-plugin-host/src/manifest.rs` | Manifest and surface validation. |
 | `crates/monocode-gpui/src/plugin_host.rs` | Sidebar entries, open/render/close, handler rewriting. |
+| `crates/monocode-gpui/src/plugin_host/api.rs` | Workspace info, plugin-scoped storage round-trip, missing keys, invalid keys, unknown methods. |
 | `crates/monocode-gpui/src/shell/sidebar_list.rs` | Clicking a plugin row opens the surface, deselects title tabs, shows the plug badge, and keeps the right panel rendered. |
 | `crates/monocode-gpui/src/visuals.rs` | Remote-tree event forwarding and tree replacement. |
 | `scripts/dev-native.test.mjs` | Native dev runner, including the adaptive Cargo job formula. |
@@ -289,6 +316,7 @@ Implemented in phase 1:
 - native declarative UI with interaction and live updates;
 - sidebar rows, full-content plugin pages, title-tab de-selection, and a
   functional right project tools panel;
+- a fixed host API for workspace metadata and plugin-scoped storage;
 - file-backed plugin state and stderr logs;
 - examples covering controls, live updates, tables, charts, and a component
   gallery.
@@ -297,15 +325,14 @@ Deferred:
 
 - WASM or any in-process runtime;
 - plugin installation, updates, signing, or a marketplace;
-- host APIs and enforced permissions;
+- broader host APIs and enforced permissions;
 - plugin-contributed title tabs (manifest placement is accepted but not shown);
 - automatic restart with backoff;
 - plugin-to-plugin communication;
 - mobile and legacy Tauri integration.
 
-The next capability layer should be small and permission-aware. The most useful
-first additions are a project/workspace context in `initialize`/`ui.open`, plus
-host calls for opening files and URLs, writing to the clipboard, and a
-plugin-scoped key-value store. That would let read-only tools such as a git
-dashboard, test runner, or code search plugin become actionable without
-weakening the current process boundary.
+The next host methods should be added only when a plugin needs them. Good
+candidates are `git.status`, `sessions.list`, `ui.open`, and `clipboard.write`.
+They should call existing app services through the same single dispatch point,
+so plugins gain capability without threading plugin-specific code through the
+rest of Monocode.

@@ -15,6 +15,7 @@ const respond = (id, result) =>
 
 let clicks = 0;
 let name = "";
+let workspace = "";
 
 const surface = {
   id: "hello",
@@ -54,6 +55,12 @@ function tree() {
             kind: "stat",
             label: "Name",
             value: name || "—",
+            color: "ink",
+          },
+          {
+            kind: "stat",
+            label: "Project",
+            value: workspace || "…",
             color: "ink",
           },
         ],
@@ -112,11 +119,25 @@ rl.on("line", (line) => {
     return;
   }
 
+  if (message.method === undefined && message.id !== undefined) {
+    if (message.id === 1 && message.result) {
+      workspace = message.result.name || "";
+      publish();
+    }
+    return;
+  }
+
   switch (message.method) {
     case "initialize":
       respond(message.id, { protocol: 1, ui: [surface] });
       notify("log", { level: "info", message: "hello plugin initialized" });
       publish();
+      send({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "workspace.info",
+        params: {},
+      });
       break;
     case "ui.open":
       publish();

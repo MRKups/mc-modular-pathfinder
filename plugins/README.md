@@ -5,7 +5,8 @@ over stdin/stdout. Monocode renders their declarative UI natively through the
 existing visual component tree. No plugin code runs inside the app.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for how the runtime, adapter, and shell
-integration fit together.
+integration fit together, and [HOST_API.md](HOST_API.md) for the methods a
+plugin can call.
 
 ## Try the example
 
@@ -18,7 +19,7 @@ each marked with a small plug icon:
 
 | Plugin | What it demonstrates |
 |---|---|
-| **Hello** | Text, input, button, counter, reset, simple state |
+| **Hello** | Text, input, button, counter, reset, `workspace.info`, simple state |
 | **Pulse** | Live 2-second updates, stats, charts, gauge, donut, progress, heatmap, table |
 | **Tasks** | Dynamic lists, toggles, input + add, select filter, per-item remove |
 | **Component gallery** | Tabs, type scale, colors, every data widget, controls, canvas shapes |
@@ -44,7 +45,9 @@ With neither location populated, the app is unchanged.
 3. On `initialize`, respond with the protocol version and (optionally) surfaces.
 4. On `ui.open`, send a `ui.set` containing a native UI tree.
 5. On `ui.event`, update your state and send another `ui.set`.
-6. Exit on `shutdown`.
+6. If you need app data, send a request such as `workspace.info` or
+   `storage.get`; see [HOST_API.md](HOST_API.md).
+7. Exit on `shutdown`.
 
 See [PROTOCOL.md](PROTOCOL.md) for the complete contract, and
 [hello/index.js](hello/index.js) for a working implementation.

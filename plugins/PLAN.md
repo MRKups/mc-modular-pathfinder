@@ -41,7 +41,7 @@ the same manifest/UI/event interfaces.
 - Plugin installation, updates, signing, marketplace, or dependency resolution.
 - A real security sandbox. A plugin process runs with the user’s permissions.
 - Plugin-to-plugin service discovery / dependency graph.
-- Host APIs for sessions, files, git, network, or notifications.
+- Broader host APIs for sessions, files, git, network, or notifications.
 - Native dylib plugins.
 - Tauri/mobile integration.
 - Arbitrary HTML/WebView plugin UI.
@@ -131,7 +131,8 @@ Rules:
   - `ui.set` (notification): new tree for a surface
   - `ui.close` (notification)
   - `log` (notification)
-  - later: `event.emit`, `host.call`
+  - `workspace.info`, `storage.get`, `storage.set` (requests)
+  - later: `event.emit`, more host methods
 - Limits:
   - max line: 2 MiB
   - max UI tree: 1 MiB / 512 nodes
@@ -364,12 +365,14 @@ clear error.
 
 **Done when:** a plugin can open as a title tab and survives app restart.
 
-### M5 — Host APIs and permissions (deferred)
+### M5 — Host APIs and permissions (in progress)
 
+- [x] Add fixed host request dispatch and JSON-RPC responses.
+- [x] Expose `workspace.info`, `storage.get`, and `storage.set`.
+- [ ] Add more host methods as plugins need them (for example `git.status`,
+      `sessions.list`, `ui.open`, `clipboard.write`).
 - [ ] Define capability names and manifest permissions.
-- [ ] Add host methods for project/session context, notifications, and app actions.
-- [ ] Add a host event bus for plugin-to-plugin communication.
-- [ ] Add a service registry with versioned interfaces.
+- [ ] Add a host event bus for subscriptions and plugin-to-plugin communication.
 - [ ] Evaluate WASM as a second runtime behind `PluginRuntime`.
 
 ## 9. Testing
@@ -426,7 +429,7 @@ MONOCODE_PLUGIN_DIR="$PWD/plugins" npm run native:dev
 
 - Should plugin discovery also scan a project-local `.monocode/plugins` directory?
 - Do we want plugin UI to remember its last surface across restarts in phase 1?
-- What is the first host API we expose (project path, current session, notifications)?
+- Which host data should require explicit permission once capabilities are enforced?
 - Should plugins be enabled per-project or globally?
 - What is the restart policy for crashing plugins?
 - When do we add tabs versus keeping the sidebar-only placement?

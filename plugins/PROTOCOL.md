@@ -200,8 +200,29 @@ Removes the surface's cached tree. The plugin process stays running.
 
 `level` defaults to `info`. Messages are truncated to 8 KiB.
 
-Requests from the plugin to the host (messages with an `id` and `method`) are
-not supported in v1. Responses to unknown ids are reported as protocol errors.
+### Host requests
+
+A message with an `id` and a method name is a request to the host. The host
+replies with a normal JSON-RPC result or error using the same id. Unknown
+methods return an error.
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"workspace.info","params":{}}
+```
+
+```json
+{"jsonrpc":"2.0","id":7,"result":{"root":"/Users/me/project","name":"project"}}
+```
+
+Current methods:
+
+- `workspace.info`
+- `storage.get`
+- `storage.set`
+
+See [HOST_API.md](HOST_API.md) for params, results, storage rules, and errors.
+The surface is additive; there is no separate API version. Responses to unknown
+ids are reported as protocol errors.
 
 ## UI trees
 

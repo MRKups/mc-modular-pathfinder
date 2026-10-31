@@ -5,11 +5,14 @@
 //! component schema, owns `VisualView`s, and renders the active plugin surface.
 //! Nothing here runs plugin code on the GPUI thread.
 
+mod api;
+
 use crate::{
     runtime::{Database, locked},
     theme::{accent_color, content, icon, icon_button},
     visuals::{RemoteEvent, VisualView},
 };
+use api::HostApi;
 use gpui::{
     AnyElement, App, Context, Entity, FontWeight, IntoElement, ParentElement, Render, Role,
     SharedString, Styled, Task, Window, div, prelude::*, px,
@@ -69,6 +72,7 @@ struct ActivePlugin {
 pub(crate) struct PluginSurfaceHost {
     runtime: PluginRuntime,
     events: Receiver<HostEvent>,
+    host_api: HostApi,
     plugins: HashMap<String, PluginEntry>,
     views: HashMap<String, Entity<VisualView>>,
     /// Native visuals only accept numeric callback ids. Plugins get readable
@@ -145,6 +149,7 @@ impl PluginSurfaceHost {
         let mut this = Self {
             runtime,
             events,
+            host_api: HostApi::new(root.clone(), None),
             plugins: HashMap::new(),
             views: HashMap::new(),
             handler_maps: HashMap::new(),
@@ -174,11 +179,16 @@ impl PluginSurfaceHost {
         this
     }
 
-    pub(crate) fn new(location: PluginLocation, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        location: PluginLocation,
+        workspace_root: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let log_dir = location
             .data_dir
             .as_ref()
             .map(|dir| dir.join("plugin-logs"));
+        let host_api = HostApi::new(workspace_root, location.data_dir.clone());
         let options = HostOptions {
             app_version: env!("CARGO_PKG_VERSION").into(),
             data_dir: location.data_dir,
@@ -200,6 +210,7 @@ impl PluginSurfaceHost {
         let mut this = Self {
             runtime,
             events,
+            host_api,
             plugins: HashMap::new(),
             views: HashMap::new(),
             handler_maps: HashMap::new(),
@@ -287,6 +298,16 @@ impl PluginSurfaceHost {
                     self.active = None;
                 }
                 true
+            }
+            HostEvent::Call {
+                plugin_id,
+                id,
+                method,
+                params,
+            } => {
+                let result = self.host_api.call(&plugin_id, &method, params);
+                self.runtime.respond(&plugin_id, id, result);
+                false
             }
             HostEvent::Offline { plugin_id, reason } => {
                 if let Some(entry) = self.plugins.get_mut(&plugin_id) {
@@ -394,6 +415,10 @@ impl PluginSurfaceHost {
             }
         };
         view.update(cx, |view, cx| view.set_tree(node, cx));
+    }
+
+    pub(crate) fn set_workspace_root(&mut self, root: PathBuf) {
+        self.host_api.set_workspace_root(root);
     }
 
     pub(crate) fn open(&mut self, plugin_id: &str, surface_id: &str, cx: &mut Context<Self>) {
@@ -761,6 +786,7 @@ mod tests {
                     let mut host = PluginSurfaceHost {
                         runtime,
                         events,
+                        host_api: HostApi::new(dir.clone(), Some(dir.clone())),
                         plugins: HashMap::new(),
                         views: HashMap::new(),
                         handler_maps: HashMap::new(),

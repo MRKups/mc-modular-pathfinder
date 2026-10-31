@@ -29,6 +29,26 @@ struct OutgoingNotification<'a> {
     params: Value,
 }
 
+#[derive(Debug, Serialize)]
+struct OutgoingResult {
+    jsonrpc: &'static str,
+    id: u64,
+    result: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct OutgoingError<'a> {
+    jsonrpc: &'static str,
+    id: u64,
+    error: OutgoingErrorBody<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct OutgoingErrorBody<'a> {
+    code: i64,
+    message: &'a str,
+}
+
 pub fn request_line(id: u64, method: &str, params: Value) -> Result<String, String> {
     serde_json::to_string(&OutgoingRequest {
         jsonrpc: "2.0",
@@ -46,6 +66,24 @@ pub fn notification_line(method: &str, params: Value) -> Result<String, String> 
         params,
     })
     .map_err(|error| format!("Cannot encode plugin notification: {error}"))
+}
+
+pub fn response_line(id: u64, result: Value) -> Result<String, String> {
+    serde_json::to_string(&OutgoingResult {
+        jsonrpc: "2.0",
+        id,
+        result,
+    })
+    .map_err(|error| format!("Cannot encode plugin response: {error}"))
+}
+
+pub fn error_line(id: u64, code: i64, message: &str) -> Result<String, String> {
+    serde_json::to_string(&OutgoingError {
+        jsonrpc: "2.0",
+        id,
+        error: OutgoingErrorBody { code, message },
+    })
+    .map_err(|error| format!("Cannot encode plugin error: {error}"))
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -143,6 +181,21 @@ mod tests {
         let message = parse_incoming(&line).unwrap();
         assert!(!message.is_response());
         assert_eq!(message.id, Some(7));
+
+        let line = response_line(8, serde_json::json!({"ok": true})).unwrap();
+        let message = parse_incoming(&line).unwrap();
+        assert!(message.is_response());
+        assert_eq!(
+            message.response_result().unwrap(),
+            serde_json::json!({"ok": true})
+        );
+
+        let line = error_line(9, -32000, "nope").unwrap();
+        let message = parse_incoming(&line).unwrap();
+        assert_eq!(
+            message.response_result().unwrap_err(),
+            "Plugin error -32000: nope"
+        );
     }
 
     #[test]

@@ -736,6 +736,17 @@ impl Shell {
                 .overflow_hidden()
                 .child(settings.clone());
         }
+        if let Some(plugins) = &self.plugin_host
+            && plugins.read(cx).is_active()
+        {
+            return div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .flex()
+                .overflow_hidden()
+                .child(plugins.clone());
+        }
         let panel: Option<Entity<RightPanel>> = self
             .right_panel
             .clone()

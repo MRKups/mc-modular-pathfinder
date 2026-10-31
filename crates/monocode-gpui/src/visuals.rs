@@ -23,9 +23,13 @@ mod tests;
 
 /// The transcript must remeasure this row when its content changes.
 pub(crate) struct VisualChanged;
+pub(crate) type RemoteEvent = Rc<dyn Fn(&str, Value)>;
 pub(crate) struct VisualView {
     document: VisualDocument,
     runtime: Option<VisualRuntime>,
+    /// Plugin surfaces forward interactions to an external process instead of
+    /// running a QuickJS program inside the host.
+    remote: Option<RemoteEvent>,
     tree: Option<Node>,
     error: Option<String>,
     width: Rc<Cell<f32>>,
@@ -166,6 +170,7 @@ impl VisualView {
         let mut this = Self {
             document,
             runtime: None,
+            remote: None,
             tree: None,
             error: None,
             width: Rc::new(Cell::new(640.)),
@@ -182,6 +187,38 @@ impl VisualView {
         };
         this.initialize();
         this
+    }
+    /// A native tree owned by an external plugin. No script runs in the host;
+    /// control events are forwarded to the plugin process by `on_event`.
+    pub(crate) fn remote(id: String, title: String, tree: Node, on_event: RemoteEvent) -> Self {
+        Self {
+            document: VisualDocument {
+                id,
+                title,
+                source: "plugin".into(),
+            },
+            runtime: None,
+            remote: Some(on_event),
+            tree: Some(tree),
+            error: None,
+            width: Rc::new(Cell::new(640.)),
+            tracks: HashMap::new(),
+            slider_drag: None,
+            orbits: HashMap::new(),
+            scene_drag: None,
+            inputs: HashMap::new(),
+            active: HashSet::new(),
+            revision: 0,
+            scene_cache: HashMap::new(),
+            // The plugin host draws its own surface header.
+            inline: Some(String::new()),
+            motion: dither::Motion(std::time::Instant::now()),
+        }
+    }
+    /// Replace a remote tree after the plugin process sends an update.
+    pub(crate) fn set_tree(&mut self, tree: Node, cx: &mut Context<Self>) {
+        self.apply_tree(tree);
+        self.changed(cx);
     }
     /// Draws the visual inside an answer, captioned, or back in its own row.
     pub(crate) fn set_inline(&mut self, caption: Option<String>, cx: &mut Context<Self>) {
@@ -215,39 +252,15 @@ impl VisualView {
         cx.notify();
     }
     fn dispatch(&mut self, handler: &str, value: Value, cx: &mut Context<Self>) {
+        if let Some(remote) = self.remote.clone() {
+            remote(handler, value);
+            return;
+        }
         let Some(runtime) = self.runtime.as_mut() else {
             return;
         };
         match runtime.dispatch(handler, value) {
-            Ok(tree) => {
-                self.revision = self.revision.wrapping_add(1);
-                // A render refreshes callback capabilities. A pointer drag and a
-                // focused input survive that render, so refresh their bindings too.
-                if let Some(drag) = self.slider_drag.as_mut() {
-                    if let Some(Node::Slider {
-                        handler,
-                        min,
-                        max,
-                        step,
-                        ..
-                    }) = node_at(&tree, &drag.key)
-                    {
-                        drag.handler = handler.clone();
-                        drag.min = *min;
-                        drag.max = *max;
-                        drag.step = *step;
-                    } else {
-                        self.slider_drag = None;
-                    }
-                }
-                for (key, slot) in &mut self.inputs {
-                    if let Some(Node::Input { handler, .. }) = node_at(&tree, key) {
-                        slot.handler = handler.clone();
-                    }
-                }
-                self.tree = Some(tree);
-                self.error = None;
-            }
+            Ok(tree) => self.apply_tree(tree),
             Err(error) => {
                 self.error = Some(error);
                 self.slider_drag = None;
@@ -255,6 +268,35 @@ impl VisualView {
             }
         }
         self.changed(cx);
+    }
+    fn apply_tree(&mut self, tree: Node) {
+        self.revision = self.revision.wrapping_add(1);
+        // A render refreshes callback capabilities. A pointer drag and a
+        // focused input survive that render, so refresh their bindings too.
+        if let Some(drag) = self.slider_drag.as_mut() {
+            if let Some(Node::Slider {
+                handler,
+                min,
+                max,
+                step,
+                ..
+            }) = node_at(&tree, &drag.key)
+            {
+                drag.handler = handler.clone();
+                drag.min = *min;
+                drag.max = *max;
+                drag.step = *step;
+            } else {
+                self.slider_drag = None;
+            }
+        }
+        for (key, slot) in &mut self.inputs {
+            if let Some(Node::Input { handler, .. }) = node_at(&tree, key) {
+                slot.handler = handler.clone();
+            }
+        }
+        self.tree = Some(tree);
+        self.error = None;
     }
     fn slide(&mut self, x: Pixels, cx: &mut Context<Self>) {
         let Some(drag) = &self.slider_drag else {

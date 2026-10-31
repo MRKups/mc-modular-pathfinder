@@ -138,6 +138,7 @@ impl Shell {
         }
         self.close_menu(cx);
         self.close_preview(cx);
+        self.leave_plugin_surface(cx);
         self.leave_app_views(cx);
         if let Some(monos) = &self.monos {
             monos.update(cx, |m, cx| m.close(cx));

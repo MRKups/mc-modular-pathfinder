@@ -3796,6 +3796,7 @@ dependencies = [
  "mermaid-rs-renderer",
  "mimalloc",
  "monocode-core",
+ "monocode-plugin-host",
  "notify",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
@@ -3849,6 +3850,14 @@ dependencies = [
  "socket2",
  "tokio",
  "x509-parser",
+]
+
+[[package]]
+name = "monocode-plugin-host"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

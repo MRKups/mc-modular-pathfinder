@@ -158,6 +158,7 @@ impl Shell {
     }
 
     fn prepare_app_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.leave_plugin_surface(cx);
         self.leave_app_search(cx);
         self.close_preview(cx);
         self.close_menu(cx);

@@ -9,6 +9,7 @@ publish = false
 serde.workspace = true
 serde_json.workspace = true
 monocode-core = { path = "../monocode-core" }
+monocode-plugin-host = { path = "../monocode-plugin-host" }
 pulldown-cmark = "0.13.5"
 mermaid-rs-renderer = { version = "0.3.1", default-features = false }
 syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
@@ -77,7 +78,7 @@ parking_lot = "0.12"
 # Experimental native builds resolve separately from the production Tauri app.
 [workspace]
 resolver = "2"
-members = [".", "../monocode-core"]
+members = [".", "../monocode-core", "../monocode-plugin-host"]
 
 [workspace.package]
 version = "0.16.0"

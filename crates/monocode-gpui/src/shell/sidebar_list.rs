@@ -611,6 +611,7 @@ impl Shell {
     }
 
     pub(super) fn sidebar_navigation(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let plugin_navigation = self.plugin_navigation(cx);
         div()
             .w_full()
             .px_2()
@@ -777,6 +778,7 @@ impl Shell {
                         }))
                 }),
             )
+            .children(plugin_navigation)
             .into_any()
     }
     fn notify_navigation(&self, cx: &mut Context<Self>) {
@@ -856,6 +858,64 @@ mod tests {
         let search = visual.debug_bounds("sidebar-search-field").unwrap();
         assert_eq!(search.left() - sidebar.left(), px(8.));
         assert_eq!(sidebar.right() - search.right(), px(8.));
+    }
+
+    #[gpui::test]
+    fn plugin_sidebar_row_opens_the_native_plugin_surface(cx: &mut TestAppContext) {
+        let (window, _, _) = super::super::tests::window(cx);
+        let manifest = serde_json::from_value(serde_json::json!({
+            "id": "com.test.adapter",
+            "name": "Adapter test",
+            "version": "0.1.0",
+            "protocol": 1,
+            "command": ["unused"],
+            "ui": [{
+                "id": "main",
+                "title": "Main",
+                "icon": "sparkles",
+                "placements": ["sidebar"]
+            }]
+        }))
+        .unwrap();
+        let tree = serde_json::json!({
+            "kind": "column",
+            "gap": 8,
+            "children": [
+                {"kind": "text", "text": "Plugin body", "size": "body", "color": "ink"},
+                {"kind": "button", "label": "Click", "handler": "click", "disabled": false}
+            ]
+        });
+        window
+            .update(cx, |shell, _, cx| {
+                let host = cx.new(|cx| {
+                    crate::plugin_host::PluginSurfaceHost::with_surface(manifest, tree, cx)
+                });
+                shell.plugin_host = Some(host);
+                shell.notify_sidebar(cx);
+                cx.notify();
+            })
+            .unwrap();
+        let visual = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        visual.run_until_parked();
+        let row = visual
+            .debug_bounds("sidebar-plugin-com.test.adapter-main")
+            .expect("plugin surface should add a sidebar row");
+        visual.simulate_click(row.center(), Default::default());
+        visual.run_until_parked();
+        window
+            .update(visual, |shell, _, cx| {
+                assert!(
+                    shell
+                        .plugin_host
+                        .as_ref()
+                        .is_some_and(|host| host.read(cx).is_active())
+                );
+            })
+            .unwrap();
+        assert!(
+            visual.debug_bounds("visual-button-root/1").is_some(),
+            "clicking the sidebar row should render the plugin's native tree"
+        );
     }
 
     #[gpui::test]

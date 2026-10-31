@@ -385,6 +385,62 @@ fn tall_visual_uses_full_height_and_wheel_scrolls_the_conversation(cx: &mut Test
 }
 
 #[gpui::test]
+fn remote_tree_forwards_events_and_accepts_plugin_updates(cx: &mut TestAppContext) {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let on_event = {
+        let events = events.clone();
+        Rc::new(move |handler: &str, value: Value| {
+            events.borrow_mut().push((handler.to_string(), value));
+        })
+    };
+    let tree = |text: &str| Node::Column {
+        children: vec![
+            Node::Text {
+                text: text.into(),
+                size: TextSize::Body,
+                color: ThemeColor::Ink,
+            },
+            Node::Button {
+                label: "Click".into(),
+                handler: "click".into(),
+                disabled: false,
+            },
+        ],
+        gap: 8.,
+    };
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| {
+            cx.new(|_| {
+                VisualView::remote(
+                    "remote-test".into(),
+                    "Remote".into(),
+                    tree("Count: 0"),
+                    on_event.clone(),
+                )
+            })
+        })
+        .unwrap()
+    });
+    let visual = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+    visual.run_until_parked();
+    let bounds = visual
+        .debug_bounds("visual-button-root/1")
+        .expect("remote tree should render native controls");
+    visual.simulate_click(bounds.center(), Default::default());
+    visual.run_until_parked();
+    assert_eq!(events.borrow()[0].0, "click");
+    window
+        .update(visual, |view, _, cx| view.set_tree(tree("Count: 1"), cx))
+        .unwrap();
+    visual.run_until_parked();
+    window
+        .update(visual, |view, _, _| {
+            assert_eq!(first_text(&view.tree), "Count: 1")
+        })
+        .unwrap();
+}
+
+#[gpui::test]
 fn width_changes_emit_row_remeasure_events(cx: &mut TestAppContext) {
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| {

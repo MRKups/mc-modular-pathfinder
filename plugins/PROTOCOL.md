@@ -81,6 +81,7 @@ are visible.
 - Maximum line length is **2 MiB**.
 - Maximum serialized UI tree is **1 MiB**; the native tree validator additionally
   limits it to **512 nodes**.
+- A `code_editor` value is capped at 64 KiB; unknown languages render plain.
 
 ## Handshake
 
@@ -148,6 +149,7 @@ Sent when a native control fires. `value` is one of:
 | button | `null` |
 | toggle | boolean |
 | input | string |
+| code_editor | full text |
 | select | selected index (number) |
 | slider | number |
 | tabs | selected index (number) |
@@ -215,10 +217,13 @@ Current methods:
 - `workspace.info`
 - `storage.get`
 - `storage.set`
+- `host.describe`
+- `llm.providers`
+- `llm.complete`
 
-See [HOST_API.md](HOST_API.md) for params, results, storage rules, and errors.
-The surface is additive; there is no separate API version. Responses to unknown
-ids are reported as protocol errors.
+See [HOST_API.md](HOST_API.md) for params, results, storage and model rules, and
+errors. The surface is additive; there is no separate API version. Responses to
+unknown ids are reported as protocol errors.
 
 ## UI trees
 
@@ -238,6 +243,7 @@ Common nodes:
 {"kind":"button","label":"Click","handler":"click","disabled":false}
 {"kind":"toggle","label":"Enabled","value":true,"handler":"toggle"}
 {"kind":"input","label":"Name","value":"","placeholder":"Type","handler":"name"}
+{"kind":"code_editor","label":"Source","value":"console.log(1)","language":"js","height":360,"handler":"source","read_only":false}
 {"kind":"select","label":"Choice","options":["A","B"],"selected":0,"handler":"choice"}
 {"kind":"slider","label":"Amount","value":50,"min":0,"max":100,"step":1,"handler":"amount"}
 {"kind":"tabs","labels":["One","Two"],"selected":0,"handler":"tab"}

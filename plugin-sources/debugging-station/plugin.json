@@ -1,0 +1,17 @@
+{
+  "id": "com.example.debugging-station",
+  "name": "Debugging Station",
+  "protocol": 1,
+  "command": [
+    "./bin/debugging-station"
+  ],
+  "cwd": ".",
+  "ui": [
+    {
+      "id": "debugging-station",
+      "title": "Debugging Station",
+      "icon": "terminal",
+      "order": 3
+    }
+  ]
+}

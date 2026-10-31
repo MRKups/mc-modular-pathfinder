@@ -10,6 +10,7 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -73,13 +74,12 @@ function buildPlugin(name, source, pluginDir) {
 
   if (existsSync(join(source, "Cargo.toml"))) {
     kind = "rust";
-    run("cargo", [
-      "build",
-      "--release",
-      "--locked",
-      "--manifest-path",
-      join(source, "Cargo.toml"),
-    ]);
+    const args = ["build", "--release"];
+    if (existsSync(join(source, "Cargo.lock"))) {
+      args.push("--locked");
+    }
+    args.push("--manifest-path", join(source, "Cargo.toml"));
+    run("cargo", args);
     const binary = join(source, "target", "release", `${name}${executable}`);
     if (!existsSync(binary)) {
       throw new Error(`Rust build did not produce ${binary}`);
@@ -120,6 +120,14 @@ function buildPlugin(name, source, pluginDir) {
     join(pluginDir, "plugin.json"),
     `${JSON.stringify(manifest, null, 2)}\n`,
   );
+  for (const extra of ["docs", "README.md", "package.json"]) {
+    const from = join(source, extra);
+    if (!existsSync(from)) {
+      continue;
+    }
+    const to = join(pluginDir, extra);
+    cpSync(from, to, { recursive: true });
+  }
   console.log(`[plugins] built ${name} (${kind}) -> plugins/${name}`);
 }
 
@@ -128,6 +136,16 @@ function main() {
   const entries = readdirSync(sources, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .sort((a, b) => a.name.localeCompare(b.name));
+  const expected = new Set(
+    entries
+      .filter((entry) => existsSync(join(sources, entry.name, "plugin.json")))
+      .map((entry) => entry.name),
+  );
+  for (const entry of readdirSync(output, { withFileTypes: true })) {
+    if (entry.isDirectory() && !expected.has(entry.name)) {
+      rmSync(join(output, entry.name), { recursive: true, force: true });
+    }
+  }
 
   let built = 0;
   for (const entry of entries) {

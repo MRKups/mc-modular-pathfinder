@@ -1,0 +1,18 @@
+{
+  "id": "com.example.authoring-station",
+  "name": "Plugin Authoring",
+  "protocol": 1,
+  "command": [
+    "node",
+    "index.js"
+  ],
+  "cwd": ".",
+  "ui": [
+    {
+      "id": "authoring-station",
+      "title": "Plugin Authoring",
+      "icon": "plug",
+      "order": 4
+    }
+  ]
+}

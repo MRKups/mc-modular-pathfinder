@@ -191,6 +191,17 @@ pub enum Node {
         placeholder: Option<String>,
         handler: String,
     },
+    /// A multiline, syntax-highlighted code field. `language` is a short
+    /// extension such as `js`, `py`, `rs`, or `go`; unknown values stay plain.
+    CodeEditor {
+        label: String,
+        value: String,
+        language: String,
+        height: f32,
+        handler: String,
+        #[serde(default)]
+        read_only: bool,
+    },
     Select {
         label: String,
         options: Vec<String>,
@@ -515,6 +526,20 @@ impl Node {
                 if let Some(placeholder) = placeholder {
                     budget.text(placeholder, 256)?;
                 }
+                validate_handler(handler)?;
+            }
+            Self::CodeEditor {
+                label,
+                value,
+                language,
+                height,
+                handler,
+                ..
+            } => {
+                budget.text(label, 256)?;
+                budget.text(value, 64 * 1024)?;
+                budget.text(language, 32)?;
+                bounded(*height as f64, 120., 900., "code editor height")?;
                 validate_handler(handler)?;
             }
             Self::Select {

@@ -1,0 +1,17 @@
+{
+  "id": "com.example.workspace-analysis",
+  "name": "Workspace Analysis",
+  "protocol": 1,
+  "command": [
+    "./bin/workspace-analysis"
+  ],
+  "cwd": ".",
+  "ui": [
+    {
+      "id": "workspace-analysis",
+      "title": "Workspace Analysis",
+      "icon": "search",
+      "order": 2
+    }
+  ]
+}

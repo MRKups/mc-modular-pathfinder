@@ -324,3 +324,32 @@ fn dashboard_components_render_and_reject_invalid_data() {
         assert!(check(source).is_err(), "accepted {source}");
     }
 }
+
+#[test]
+fn code_editor_is_bounded_and_read_only_defaults_false() {
+    let node: Node = serde_json::from_value(json!({
+        "kind": "code_editor",
+        "label": "Source",
+        "value": "print('hello')",
+        "language": "py",
+        "height": 320,
+        "handler": "7:0"
+    }))
+    .unwrap();
+    node.validate().unwrap();
+    let Node::CodeEditor { read_only, .. } = node else {
+        panic!("Expected code editor")
+    };
+    assert!(!read_only);
+
+    let bad: Node = serde_json::from_value(json!({
+        "kind": "code_editor",
+        "label": "Source",
+        "value": "",
+        "language": "py",
+        "height": 20,
+        "handler": "7:0"
+    }))
+    .unwrap();
+    assert!(bad.validate().unwrap_err().contains("code editor height"));
+}

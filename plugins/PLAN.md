@@ -1,6 +1,6 @@
 # Monocode plugin system — implementation notes
 
-- Status: phase 1 proof implemented.
+- Status: runtime, host API, native UI bridge, and four purposeful examples implemented.
 - Architecture: [ARCHITECTURE.md](ARCHITECTURE.md)
 - Wire contract: [PROTOCOL.md](PROTOCOL.md)
 - Host API: [HOST_API.md](HOST_API.md)
@@ -14,12 +14,11 @@
 - Plugin UI is a declarative native tree rendered by GPUI. No WebView or native
   library loading.
 - Each plugin surface is a full-content sidebar page.
-- Plugins can call a small fixed host API for workspace metadata and
-  plugin-scoped storage.
+- Plugins can call a fixed host API for workspace metadata, plugin-scoped
+  storage, API metadata, and text-only model completions.
 - `npm run plugins` builds Node, Rust, Go, and Python examples into
   self-contained packages under `plugins/`, then launches the app with that
-  directory: Hello is Node.js, Dashboard is Rust, Tasks is Go, and Focus is
-  Python.
+  directory.
 - The app behaves normally when no plugin directory is configured.
 
 ## Decisions
@@ -35,23 +34,35 @@
 | Host API | One fixed method table in `plugin_host/api.rs` |
 | API versioning | None; new methods are additive |
 | Plugin build | `npm run plugins` (build + launch); `npm run plugins:build` (build only) |
-| Examples | Node.js, Rust, Go, Python |
+| Examples | Python, Rust, Go, Node.js |
+
+## Examples
+
+| Plugin | Language | Job |
+|---|---|---|
+| **Dashboard** | Python | Data workbench for workspace CSV/TSV/JSON |
+| **Workspace Analysis** | Rust | Dynamic repository analysis and health evidence |
+| **Debugging Station** | Go | Live process, memory, disk, and network inspection |
+| **Plugin Authoring** | Node.js | Docs, scaffold generation, source editing, and LLM help |
+
+The languages follow the workload: Python for data shaping, Rust for fast
+repository walking, Go for OS inspection, Node for tooling and text generation.
 
 ## Manifest
 
 ```json
 {
-  "id": "com.example.hello",
-  "name": "Hello",
+  "id": "com.example.authoring-station",
+  "name": "Plugin Authoring",
   "protocol": 1,
   "command": ["node", "index.js"],
   "cwd": ".",
   "ui": [
     {
-      "id": "hello",
-      "title": "Hello",
-      "icon": "sparkles",
-      "order": 1
+      "id": "authoring-station",
+      "title": "Plugin Authoring",
+      "icon": "plug",
+      "order": 4
     }
   ]
 }
@@ -82,7 +93,8 @@ Plugin → host:
 - `ui.set`
 - `ui.close`
 - `log`
-- `workspace.info`, `storage.get`, `storage.set` (requests)
+- `workspace.info`, `storage.get`, `storage.set`, `host.describe`,
+  `llm.providers`, `llm.complete` (requests)
 
 Limits:
 
@@ -91,6 +103,7 @@ Limits:
 - 512 nodes per validated UI tree.
 - 5 second handshake timeout.
 - 2 second shutdown grace before the child is killed.
+- `llm.complete`: 64 KiB prompt, 16 KiB system, 64 KiB output.
 
 ## UI integration
 
@@ -102,6 +115,8 @@ Limits:
 - The previously active session is restored when the plugin page closes.
 - The right project tools panel remains available beside a plugin page.
 - Navigating away sends `ui.close`; the plugin process stays alive.
+- `CodeEditor` is a native multiline syntax-highlighting node built on the
+  existing file editor.
 
 ## Host API
 
@@ -113,8 +128,15 @@ Current methods:
 - `workspace.info`
 - `storage.get`
 - `storage.set`
+- `host.describe`
+- `llm.providers`
+- `llm.complete`
 
 Storage lives at `<app-data-dir>/plugin-data/<plugin-id>/storage.json`.
+
+`llm.complete` runs `provider::run_text` on a worker thread: text-only,
+read-only, tool-free, and credential-isolated. It does not expose the Operator
+app token.
 
 ## Files
 
@@ -123,39 +145,18 @@ crates/monocode-plugin-host/       standalone runtime
 crates/monocode-gpui/src/
   plugin_host.rs                   GPUI adapter
   plugin_host/api.rs               fixed host method table
-  visuals.rs                       remote-tree VisualView mode
+  visuals.rs                       remote-tree VisualView mode and code editor
 plugin-sources/
-  hello/                           Node source
-  dashboard/                       Rust source
-  tasks/                           Go source
-  focus/                           Python source
+  dashboard/                       Python data workbench
+  workspace-analysis/              Rust repository analysis
+  debugging-station/               Go system inspector
+  authoring-station/               Node docs/scaffold/editor/LLM station
 plugins/
-  hello/ dashboard/ tasks/ focus/  generated runtime packages
+  <generated packages>             assembled by scripts/build-plugins.mjs
   PROTOCOL.md
   HOST_API.md
   ARCHITECTURE.md
 scripts/
   build-plugins.mjs                plugin build
+  plugins-dev.mjs                  build + launch wrapper
 ```
-
-## Verification
-
-- Host integration test uses a real child process for handshake, host calls,
-  UI events, and shutdown.
-- Manifest, protocol, and line-limit tests pass.
-- Adapter tests cover sidebar entries, open/render/close, handler rewriting,
-  host API methods, title-tab de-selection, the plug badge, and the right panel.
-- Native dev script tests pass.
-- `npm run plugins:build` produces all four packages and the plugin processes
-  pass a handshake/UI smoke test.
-- `cargo clippy -D warnings` and `cargo fmt --check` pass.
-
-## Limits
-
-- Plugins are trusted processes. There is no sandbox and no permission system.
-- A plugin receives the app data directory at startup and can access anything
-  the user can.
-- Plugin surfaces are sidebar pages only.
-- A crashed plugin stays offline until the app restarts.
-- The host API has only the methods listed above.
-- There is no plugin installation, update, or marketplace flow.

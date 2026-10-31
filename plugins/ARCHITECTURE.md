@@ -1,6 +1,6 @@
 # Monocode plugin architecture
 
-Status: phase 1 proof, protocol v1.  
+Status: protocol v1, four examples implemented.
 Scope: the native GPUI app (`crates/monocode-gpui`). Mobile and the legacy
 Tauri desktop are out of scope.
 
@@ -17,9 +17,9 @@ stdin, writes JSON-RPC messages to stdout, and describes its UI as a declarative
 tree that the app renders with its existing native component model.
 
 ```text
-plugin-sources/hello/
+plugin-sources/authoring-station/
   index.js                    plugin process
-plugins/hello/
+plugins/authoring-station/
   plugin.json                 runtime manifest: id, command, surfaces
 
         │  newline-delimited JSON-RPC 2.0 over stdin/stdout
@@ -132,12 +132,14 @@ by `plugin_icon`, with `sparkles` as the default.
 `MONOCODE_PLUGIN_DIR` set to `plugins/`. The build step scans
 `plugin-sources/` and assembles runnable packages under `plugins/`:
 
-- Node sources are copied.
+- Node sources are copied with `package.json` when present.
 - Python sources are syntax-checked and copied.
-- Rust sources are built with `cargo build --release`; the binary is copied to
+- Rust sources are built with `cargo build --release`; `--locked` is used only
+  when the source has a `Cargo.lock`. The binary is copied to
   `plugins/<name>/bin/`.
 - Go sources are built with `go build`; the binary is copied to
   `plugins/<name>/bin/`.
+- `docs/` and `README.md` beside a source are copied into the package.
 
 `npm run plugins:build` runs only the build. The Monocode app build itself does
 not build plugins, so the app can stay inert when no plugin packages are
@@ -209,7 +211,17 @@ emits `HostEvent::Call`; the adapter routes it through `HostApi`; then
 The current surface is deliberately small:
 
 - `workspace.info` returns the active project root and name;
-- `storage.get` and `storage.set` read and write a plugin-scoped JSON store.
+- `storage.get` and `storage.set` read and write a plugin-scoped JSON store;
+- `host.describe` returns the protocol, app version, method list, feature flags,
+  limits, and plugin directory;
+- `llm.providers` lists installed text-capable providers and cached models;
+- `llm.complete` runs a bounded, text-only, read-only provider request on a
+  worker thread and returns `{text, provider, model}`.
+
+`llm.complete` must never run on the GPUI thread. The adapter validates and
+prepares the request, spawns the blocking `provider::run_text` call, and sends
+the result through `PluginRuntime::respond` when it finishes. Credentials stay
+inside the app; plugins do not receive the Operator app token.
 
 There is no separate host API version. Methods are additive; unknown methods
 return an error. App modules expose normal functions, and the single match in
@@ -296,9 +308,10 @@ network. It also receives the app data directory at startup. Process isolation
 provides crash and UI isolation only; the host API is a contract, not an
 enforcement boundary.
 
-There is no permission system. The host API exposes workspace metadata and
-plugin-scoped storage only. Outside that API, a plugin can access anything the
-user can.
+There is no permission system. The host API exposes workspace metadata,
+plugin-scoped storage, API metadata, and narrow model completions. Outside that
+API, a plugin can access anything the user can. `llm.complete` is text-only and
+tool-free, but it is not a sandbox for the plugin process itself.
 
 ## 8. Testing
 
@@ -308,10 +321,13 @@ user can.
 | `crates/monocode-plugin-host/src/host.rs` | Framing and oversized-line limits. |
 | `crates/monocode-plugin-host/src/manifest.rs` | Manifest and surface validation. |
 | `crates/monocode-gpui/src/plugin_host.rs` | Sidebar entries, open/render/close, handler rewriting. |
-| `crates/monocode-gpui/src/plugin_host/api.rs` | Workspace info, plugin-scoped storage round-trip, missing keys, invalid keys, unknown methods. |
+| `crates/monocode-gpui/src/plugin_host/api.rs` | Workspace info, plugin-scoped storage round-trip, missing keys, invalid keys, unknown methods, describe limits, completion validation. |
 | `crates/monocode-gpui/src/shell/sidebar_list.rs` | Clicking a plugin row opens the surface, deselects title tabs, shows the plug badge, and keeps the right panel rendered. |
-| `crates/monocode-gpui/src/visuals.rs` | Remote-tree event forwarding and tree replacement. |
+| `crates/monocode-gpui/src/visuals.rs` | Remote-tree event forwarding, tree replacement, and code-editor rendering/events. |
 | `scripts/dev-native.test.mjs` | Native dev runner, including the adaptive Cargo job formula. |
+
+The four example packages are also probed directly over stdio for all surfaces
+and native-tree validation. `npm run plugins:build` is the build check.
 
 Run the proof manually with:
 
@@ -325,7 +341,9 @@ MONOCODE_PLUGIN_DIR="$PWD/plugins" npm run native:dev
 - native declarative UI with interaction and live updates;
 - sidebar rows, full-content plugin pages, title-tab de-selection, and a
   functional right project tools panel;
-- a fixed host API for workspace metadata and plugin-scoped storage;
+- a fixed host API for workspace metadata, plugin-scoped storage, API
+  metadata, and text-only model completions;
+- a native multiline code editor in the visual schema;
 - file-backed plugin state and stderr logs;
-- examples covering controls, live updates, tables, charts, a component
-  gallery, and a timer with stored session state.
+- four purposeful examples: data dashboard, workspace analysis, debugging
+  station, and plugin authoring station.

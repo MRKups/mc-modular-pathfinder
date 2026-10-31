@@ -2,8 +2,8 @@
 use crate::theme::{accent_color, content};
 use gpui::{
     AnyElement, Bounds, Context, Div, EventEmitter, FontWeight, Hsla, IntoElement, MouseButton,
-    PathBuilder, Pixels, Point, Render, Role, SharedString, Stateful, Window, canvas, div, fill,
-    point, prelude::*, px, relative, size,
+    PathBuilder, Pixels, Point, Render, Role, SharedString, Stateful, Task, Window, canvas, div,
+    fill, point, prelude::*, px, relative, size,
 };
 use monocode_core::visual::{
     Camera, Node, SceneObject, Shape, TextSize, ThemeColor, VisualDocument, VisualRuntime,
@@ -13,6 +13,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     rc::Rc,
+    sync::{Arc, Mutex},
 };
 
 mod charts;
@@ -38,6 +39,7 @@ pub(crate) struct VisualView {
     orbits: HashMap<String, scene::Orbit>,
     scene_drag: Option<(String, Point<Pixels>)>,
     inputs: HashMap<String, InputSlot>,
+    editors: HashMap<String, CodeEditorSlot>,
     active: HashSet<String>,
     revision: u64,
     scene_cache: HashMap<String, Rc<RefCell<Option<SceneCache>>>>,
@@ -58,6 +60,15 @@ struct InputSlot {
     input: gpui::Entity<crate::input::Input>,
     handler: String,
     source_value: String,
+    _subscription: gpui::Subscription,
+}
+struct CodeEditorSlot {
+    input: gpui::Entity<crate::input::Input>,
+    handler: String,
+    source_value: String,
+    path: String,
+    syntax: Option<Arc<Mutex<Option<crate::editor_syntax::Session>>>>,
+    _analysis: Option<Task<()>>,
     _subscription: gpui::Subscription,
 }
 struct SceneCache {
@@ -179,6 +190,7 @@ impl VisualView {
             orbits: HashMap::new(),
             scene_drag: None,
             inputs: HashMap::new(),
+            editors: HashMap::new(),
             active: HashSet::new(),
             revision: 0,
             scene_cache: HashMap::new(),
@@ -207,6 +219,7 @@ impl VisualView {
             orbits: HashMap::new(),
             scene_drag: None,
             inputs: HashMap::new(),
+            editors: HashMap::new(),
             active: HashSet::new(),
             revision: 0,
             scene_cache: HashMap::new(),
@@ -295,6 +308,11 @@ impl VisualView {
                 slot.handler = handler.clone();
             }
         }
+        for (key, slot) in &mut self.editors {
+            if let Some(Node::CodeEditor { handler, .. }) = node_at(&tree, key) {
+                slot.handler = handler.clone();
+            }
+        }
         self.tree = Some(tree);
         self.error = None;
     }
@@ -312,6 +330,30 @@ impl VisualView {
             .clamp(drag.min, drag.max);
         let handler = drag.handler.clone();
         self.dispatch(&handler, json!(value), cx);
+    }
+    fn analyze_editor(&mut self, key: &str, text: String, cx: &mut Context<Self>) {
+        let Some(slot) = self.editors.get(key) else {
+            return;
+        };
+        let Some(syntax) = slot.syntax.clone() else {
+            return;
+        };
+        let input = slot.input.clone();
+        let path = slot.path.clone();
+        let task = cx.spawn(async move |_, cx| {
+            let work = cx.background_executor().spawn({
+                let syntax = syntax.clone();
+                let path = path.clone();
+                let text = text.clone();
+                async move { crate::editor_syntax::analyze(&syntax, &path, &text, None) }
+            });
+            if let Ok(analysis) = work.await {
+                let _ = input.update(cx, |input, cx| input.set_editor_analysis(analysis, cx));
+            }
+        });
+        if let Some(slot) = self.editors.get_mut(key) {
+            slot._analysis = Some(task);
+        }
     }
     fn node(&mut self, node: &Node, key: String, cx: &mut Context<Self>) -> AnyElement {
         self.active.insert(key.clone());
@@ -788,6 +830,103 @@ impl VisualView {
                     .child(slot.input.clone())
                     .into_any_element()
             }
+            Node::CodeEditor {
+                label,
+                value,
+                language,
+                height,
+                handler,
+                read_only,
+            } => {
+                if !self.editors.contains_key(&key) {
+                    let path = editor_path(language);
+                    let syntax =
+                        crate::editor_syntax::supports(&path).then(|| Arc::new(Mutex::new(None)));
+                    let input = cx.new(|cx| {
+                        let mut input = crate::input::Input::editor(cx);
+                        input.set_editor_path(path.clone());
+                        input.set_max_chars(64 * 1024);
+                        input.set_read_only(*read_only);
+                        input.set_min_height(*height - 2.);
+                        input.set_max_height(*height - 2.);
+                        input.set_text(value.clone(), cx);
+                        input
+                    });
+                    let changed_key = key.clone();
+                    let subscription =
+                        cx.subscribe(&input, move |this, input, _: &crate::input::Changed, cx| {
+                            let value = input.read(cx).content.to_string();
+                            let handler = {
+                                let Some(slot) = this.editors.get_mut(&changed_key) else {
+                                    return;
+                                };
+                                if value == slot.source_value {
+                                    return;
+                                }
+                                slot.source_value = value.clone();
+                                slot.handler.clone()
+                            };
+                            this.dispatch(&handler, json!(value.clone()), cx);
+                            this.analyze_editor(&changed_key, value, cx);
+                        });
+                    self.editors.insert(
+                        key.clone(),
+                        CodeEditorSlot {
+                            input: input.clone(),
+                            handler: handler.clone(),
+                            source_value: value.clone(),
+                            path: path.clone(),
+                            syntax,
+                            _analysis: None,
+                            _subscription: subscription,
+                        },
+                    );
+                    self.analyze_editor(&key, value.clone(), cx);
+                }
+                let mut changed = false;
+                let new_path = editor_path(language);
+                {
+                    let Some(slot) = self.editors.get_mut(&key) else {
+                        return div().into_any_element();
+                    };
+                    slot.handler = handler.clone();
+                    slot.source_value = value.clone();
+                    if slot.path != new_path {
+                        slot.path = new_path.clone();
+                        slot.syntax = crate::editor_syntax::supports(&new_path)
+                            .then(|| Arc::new(Mutex::new(None)));
+                        slot.input
+                            .update(cx, |input, _| input.set_editor_path(new_path.clone()));
+                        changed = true;
+                    }
+                    if slot.input.read(cx).content.as_ref() != value {
+                        slot.input
+                            .update(cx, |input, cx| input.set_text(value.clone(), cx));
+                        changed = true;
+                    }
+                }
+                if changed {
+                    self.analyze_editor(&key, value.clone(), cx);
+                }
+                let input = self.editors[&key].input.clone();
+                div()
+                    .id(SharedString::from(format!("visual-code-editor-{key}")))
+                    .debug_selector({
+                        let key = key.clone();
+                        move || format!("visual-code-editor-{key}")
+                    })
+                    .role(Role::Group)
+                    .aria_label(label.clone())
+                    .w_full()
+                    .min_w_0()
+                    .h(px(*height))
+                    .overflow_hidden()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(content(0.14))
+                    .child(input)
+                    .into_any_element()
+            }
             Node::Select {
                 label,
                 options,
@@ -1203,6 +1342,30 @@ impl Render for VisualView {
                 }),
             )
     }
+}
+
+fn editor_path(language: &str) -> String {
+    let extension = match language.trim().to_ascii_lowercase().as_str() {
+        "js" | "javascript" | "node" => "js",
+        "jsx" => "jsx",
+        "ts" | "typescript" => "ts",
+        "tsx" => "tsx",
+        "py" | "python" => "py",
+        "rs" | "rust" => "rs",
+        "go" | "golang" => "go",
+        "json" => "json",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "html" => "html",
+        "css" => "css",
+        "sh" | "bash" | "shell" => "sh",
+        "c" => "c",
+        "cpp" | "c++" => "cpp",
+        "java" => "java",
+        "rb" | "ruby" => "rb",
+        _ => "txt",
+    };
+    format!("snippet.{extension}")
 }
 
 fn node_at<'a>(mut node: &'a Node, key: &str) -> Option<&'a Node> {

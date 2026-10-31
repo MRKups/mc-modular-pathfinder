@@ -75,6 +75,98 @@ Storage rules:
 - Writes replace the file.
 - With no app data directory, storage calls return an error.
 
+### `host.describe`
+
+Returns the protocol version, app version, plugin directory, fixed method list,
+feature flags, and limits. Use it instead of copying a versioned API list.
+
+```json
+{"jsonrpc":"2.0","id":10,"method":"host.describe","params":{}}
+```
+
+```json
+{
+  "protocol": 1,
+  "appVersion": "0.16.0",
+  "pluginDir": "/Users/me/project/plugins",
+  "methods": ["workspace.info", "storage.get", "storage.set", "host.describe", "llm.providers", "llm.complete"],
+  "features": {"codeEditor": true, "llm": true},
+  "limits": {"lineBytes": 2097152, "uiTreeBytes": 1048576, "uiNodes": 512, "sourceBytes": 65536, "llmPromptBytes": 65536, "llmSystemBytes": 16384}
+}
+```
+
+### `llm.providers`
+
+Lists installed providers that can run one-shot text work, with cached models
+and the selected account. It does not start a provider process.
+
+```json
+{
+  "providers": [
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "account": "default",
+      "models": [{"id": "claude-sonnet-4-5", "name": "Sonnet 4.5"}],
+      "background": true
+    }
+  ],
+  "background": {"provider": "claude", "model": "claude-haiku-4-5"}
+}
+```
+
+An empty `models` list means the provider's default model.
+
+### `llm.complete`
+
+Runs a bounded, text-only, read-only completion through a configured provider.
+The host calls the provider on a worker thread; credentials never reach the
+plugin and the plugin remains responsive.
+
+Request:
+
+```json
+{"jsonrpc":"2.0","id":11,"method":"llm.complete","params":{
+  "prompt": "Explain this plugin manifest",
+  "system": "You are a concise Monocode plugin expert.",
+  "provider": "claude",
+  "model": "claude-sonnet-4-5"
+}}
+```
+
+Result:
+
+```json
+{"jsonrpc":"2.0","id":11,"result":{
+  "text": "The manifest declares...",
+  "provider": "claude",
+  "model": "claude-sonnet-4-5"
+}}
+```
+
+Params:
+
+- `prompt` is required, at most 64 KiB.
+- `system` is optional, at most 16 KiB.
+- `provider` is optional; the configured background provider is the default.
+- `model` is optional; the background choice or provider default is used.
+- The result is capped at 64 KiB.
+- The runner refuses tools, approvals, questions, and workspace writes.
+- Do not expose the Operator app token to plugins. This is the narrow model
+  boundary.
+
+## UI code editor
+
+The native UI schema now includes a multiline, syntax-highlighted
+`code_editor` node:
+
+```json
+{"kind":"code_editor","label":"Source","value":"console.log(1)","language":"js","height":360,"handler":"source","read_only":false}
+```
+
+`language` is a short extension such as `js`, `py`, `rs`, `go`, `json`, or
+`toml`. Unknown languages stay plain. See [PROTOCOL.md](PROTOCOL.md#ui-trees).
+
 ## Errors
 
 All host API failures use JSON-RPC server error code `-32000` and a readable
@@ -84,6 +176,9 @@ message. Typical cases:
 - `Invalid storage.get params: ...`
 - `Storage key must not be empty`
 - `Plugin storage is unavailable: the app has no data directory`
+- `Prompt must not be empty`
+- `Unknown provider: ...`
+- `No text-capable provider is installed`
 
 A plugin should treat an error as a normal failed call, not as a reason to exit.
 
@@ -104,3 +199,6 @@ The current API is deliberately small:
 - `workspace.info`
 - `storage.get`
 - `storage.set`
+- `host.describe`
+- `llm.providers`
+- `llm.complete`

@@ -1,135 +1,88 @@
 # Example plugin roadmap
 
-Status: agreed direction, not implemented. The current four examples are
-capability demos; replace them with four plugins that each have a real job.
+Status: implemented. The four capability demos were replaced with four plugins
+that each have a real job.
 
 ## Target examples
 
 | Plugin | Language | Purpose | Showcases |
 |---|---|---|---|
-| **Dashboard** | Python | Data visualization workbench for CSV/JSON in the workspace | Charts, gauges, donuts, heatmaps, progress, stats, tables, dynamic `ui.set` |
+| **Dashboard** | Python | Data visualization workbench for CSV/TSV/JSON in the workspace | Charts, gauges, donuts, heatmaps, progress, stats, tables, dynamic `ui.set`, live file reload |
 | **Workspace Analysis** | Rust | Dynamic analysis and health of any reasonable codebase | Filesystem scanning, manifests, dependencies, TODOs, toolchain checks |
-| **Debugging Station** | Go | Live system inspection | Processes, CPU/memory, network connections, listening ports, live refresh |
-| **Plugin Authoring Station** | Node.js | Design, scaffold, document, and generate plugins | Docs/API browser, file scaffolding, LLM generation, code editing |
-
-The first three can be built with the current plugin API. The authoring station
-needs platform work first.
+| **Debugging Station** | Go | Live system inspection | Processes, CPU/load, memory, disks, network connections, listening ports, live refresh |
+| **Plugin Authoring** | Node.js | Design, scaffold, document, and generate plugins | Docs/API browser, file scaffolding, source editor, LLM generation |
 
 ## Language decision
 
-Recommended mapping (swapped from the first suggestion):
+- **Python** — Dashboard. CSV/JSON parsing and data shaping.
+- **Rust** — Workspace Analysis. Fast, bounded repository walking.
+- **Go** — Debugging Station. Process/network/system inspection without deps.
+- **Node.js** — Plugin Authoring. Templates, docs, child-process-free file IO,
+  and LLM JSON calls.
 
-- **Python** — Dashboard. Good for CSV/JSON parsing and data shaping.
-- **Rust** — Workspace Analysis. Fast, ignore-aware walking; good TOML/JSON parsing.
-- **Go** — Debugging Station. Natural for process/network inspection and concurrency.
-- **Node.js** — Plugin Authoring Station. Best fit for templates, docs, child
-  processes, and LLM JSON calls.
+## Implementation status
 
-If the authoring station must be Rust, that is feasible, but Node will be faster
-to build and iterate.
+### Dashboard
 
-## API audit
+- No host API beyond `workspace.info` and `storage.*`.
+- Discovers workspace CSV/TSV/JSON files, with three labeled sample datasets.
+- Shapes rows by x column, measure, aggregation, chart type, top-N, and compare
+  toggle.
+- Shows stats, chart, donut, gauge, progress, heatmap, and tables together.
+- Reloads the active file when Live is on and its mtime changes.
+- Persists the last view in plugin storage.
 
-### Dashboard — no new host API
+### Workspace Analysis
 
-- Uses existing `ui.set` and control events.
-- Recommended data source: a CSV/JSON file selected from the workspace, not
-  fabricated service metrics.
-- Dynamic behavior: switch dataset, chart type, series, aggregation, panel
-  layout; add/remove panels; toggle live refresh.
+- Uses `workspace.info` and direct filesystem/subprocess access.
+- Dynamically detects languages, manifests, dependency counts, lockfiles,
+  tests, CI, docs, TODO markers, large files, git state, and toolchains.
+- Reports evidence-based checks rather than an arbitrary health score.
+- Bounded scan: 50k files, 64 MiB content, 512 KiB per file.
+- Rescan and optional five-second live scanning.
 
-### Workspace Analysis — no new host API required
+### Debugging Station
 
-- `workspace.info` gives the workspace root.
-- The plugin can read files and run tools (`git`, `cargo`, `go`, etc.) directly.
-- Current model is trusted plugins with user permissions; no sandboxed file API.
-- Must discover languages/manifests dynamically and cap work on large repos.
-- Avoid an arbitrary “health score”; show evidence and warnings.
+- Read-only. Never kills processes or changes sockets.
+- Samples `ps`, load, memory, `df`, and `lsof`/`netstat`.
+- Gracefully degrades when a command or permission is unavailable.
+- Processes can be filtered and sorted by CPU, memory, name, or PID.
+- Network tab lists listeners, established connections, and socket states.
 
-### Debugging Station — system APIs, no new host API
+### Plugin Authoring
 
-- Go can inspect processes, memory, network, ports, and load.
-- Read-only by default; do not add process killing.
-- macOS permissions may limit some network/process details; degrade gracefully.
-- Optional future API: `plugins.status` to map OS processes to plugin IDs,
-  surfaces, status, and last error.
+Platform work completed:
 
-### Plugin Authoring Station — platform work required
+- `host.describe` returns the protocol, methods, limits, feature flags, and
+  plugin directory.
+- `llm.providers` lists installed text-capable providers and cached models.
+- `llm.complete` runs `provider::run_text` asynchronously on a worker thread.
+- `CodeEditor` is a native multiline, syntax-highlighted visual node.
+- Bundled docs are copied into the package by the build.
 
-Available today:
+Authoring station features:
 
-- Bundled docs and examples
-- File scaffolding into a chosen directory
-- Reading manifests and existing plugin sources
+- Docs browser from bundled Markdown.
+- Live API/limits/provider tables from `host.describe` and `llm.providers`.
+- Scaffolds Node, Python, Rust, or Go plugins with manifest, source, README, and
+  build files.
+- Loads and saves project files in the code editor.
+- Sends a system prompt and prompt to the selected provider, renders the
+  response, and can copy it into the editor.
 
-Missing:
+## Resolved decisions
 
-1. **LLM access**
-   - No host API for models or completions.
-   - Reuse `provider::run_text`, which is text-only, read-only, and tool-free.
-   - Proposed methods:
-     - `llm.providers` → installed providers/models/accounts.
-     - `llm.complete` `{prompt, system?, provider?, model?}` → `{text, provider, model}`.
-   - Must be asynchronous. Current host calls run synchronously on the GPUI
-     thread; a provider call there would freeze the UI.
-   - Do not expose the Operator app token. It grants sessions, notes, worktrees,
-     and other mutating capabilities.
+- Dashboard supports a real workspace file and includes clearly labeled sample
+  datasets as a fallback.
+- Authoring v1 is docs + scaffold + LLM + code editing. Live preview/reload is
+  deferred; restart after manifest/protocol changes.
+- No session transcript access. `llm.complete` takes a direct prompt and
+  optional system prompt only. Plugins do not receive `sessions.*` or the
+  Operator app token.
 
-2. **Code editing**
-   - `visual::Node::Input` is single-line.
-   - Add a `CodeEditor` node with language, value, handler, height.
-   - Reuse the existing `Input::editor` / `Code` syntax-highlighting machinery.
+## Deferred
 
-3. **Live preview / reload**
-   - No plugin reload API exists; generated plugins require an app restart.
-   - Options:
-     - Nested preview: the station spawns the candidate plugin and proxies its
-       JSON-RPC/UI tree as its own preview.
-     - Host API: `plugins.reload` or `plugins.load` to rescan/start plugins.
-     - v1 fallback: generate files, show instructions, restart to test.
-   - Recommended: ship v1 without live preview; add preview/reload after the
-     station’s core is working.
-
-4. **API documentation**
-   - Bundle docs for now.
-   - Optional `host.describe` method: protocol version, host methods, plugin
-     directory, limits. Keeps the station’s API reference authoritative.
-
-5. **Session context (optional)**
-   - If “sessions” means using the configured provider/model, `llm.complete`
-     covers it.
-   - If it means reading conversation transcripts, add read-only
-     `sessions.list` / `sessions.read`; this is a separate privacy decision.
-   - Do not expose `sessions.start` / `sessions.send` to plugins.
-
-## Implementation order
-
-### Phase 1 — current API
-
-1. Dashboard (Python), data-driven.
-2. Workspace Analysis (Rust).
-3. Debugging Station (Go).
-
-### Phase 2 — platform additions
-
-4. Plugin Authoring Station (Node):
-   - docs + scaffold + code preview
-   - `llm.providers` + async `llm.complete`
-   - `CodeEditor` visual node
-   - optional `host.describe`
-   - preview/reload later
-
-## Open decisions
-
-- Dashboard: require a real CSV/JSON file, or include a labeled sample dataset?
-- Authoring station v1: is live preview required, or is generate/save/restart
-  acceptable?
-- Do we need existing session transcripts as LLM context, or only direct
-  prompt-to-LLM generation?
-
-## Current repo state
-
-- Existing examples: Hello (Node), Dashboard (Rust), Tasks (Go), Focus (Python).
-- Sources: `plugin-sources/<name>/`; generated packages: `plugins/<name>/`.
-- `npm run plugins` builds all packages and launches the app.
-- All current plugin work is uncommitted on `kups/mc-plugins`.
+- `plugins.status` to map OS processes to plugin ids and last errors.
+- `plugins.reload` / `plugins.load` for live plugin lifecycle.
+- Streaming `llm.complete` or model/account pickers beyond cached catalogs.
+- Read-only `sessions.list` / `sessions.read` if transcript context is needed.

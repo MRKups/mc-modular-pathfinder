@@ -441,6 +441,57 @@ fn remote_tree_forwards_events_and_accepts_plugin_updates(cx: &mut TestAppContex
 }
 
 #[gpui::test]
+fn remote_code_editor_renders_and_forwards_edits(cx: &mut TestAppContext) {
+    cx.update(crate::input::bind);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let on_event = {
+        let events = events.clone();
+        Rc::new(move |handler: &str, value: Value| {
+            events.borrow_mut().push((handler.to_string(), value));
+        })
+    };
+    let tree = Node::Column {
+        children: vec![Node::CodeEditor {
+            label: "Source".into(),
+            value: "let answer = 41;".into(),
+            language: "rs".into(),
+            height: 220.,
+            handler: "source".into(),
+            read_only: false,
+        }],
+        gap: 8.,
+    };
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| {
+            cx.new(|_| {
+                VisualView::remote(
+                    "remote-editor-test".into(),
+                    "Remote editor".into(),
+                    tree,
+                    on_event.clone(),
+                )
+            })
+        })
+        .unwrap()
+    });
+    let visual = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+    visual.run_until_parked();
+    let bounds = visual
+        .debug_bounds("visual-code-editor-root/0")
+        .expect("remote code editor should render");
+    visual.simulate_click(bounds.center(), Default::default());
+    visual.simulate_input("2");
+    visual.run_until_parked();
+    assert!(
+        events.borrow().iter().any(|(handler, value)| {
+            handler == "source" && value.as_str().is_some_and(|text| text.contains('2'))
+        }),
+        "code editor edits should be forwarded: {:?}",
+        events.borrow()
+    );
+}
+
+#[gpui::test]
 fn width_changes_emit_row_remeasure_events(cx: &mut TestAppContext) {
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| {

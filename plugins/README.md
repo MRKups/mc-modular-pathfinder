@@ -27,20 +27,25 @@ Building the examples expects `node`, `cargo`, `go`, and Python 3 (`python3` or
 The sidebar gains four plugin rows alongside Inbox, Notes and Automations,
 each marked with a small plug icon:
 
-| Plugin | Language | What it demonstrates |
+| Plugin | Language | What it does |
 |---|---|---|
-| **Hello** | Node.js | `workspace.info`, counters, input, tabs, type scale, every data widget, controls, canvas shapes |
-| **Dashboard** | Rust | Live 2-second updates, stats, charts, gauge, donut, progress, table |
-| **Tasks** | Go | Dynamic lists, toggles, input + add, select filter, remove |
-| **Focus** | Python | A live Pomodoro timer, mode switching, store-backed completed sessions |
+| **Dashboard** | Python | Discovers CSV/TSV/JSON data, shapes charts, tables, gauges, donuts, heatmaps, and live file updates |
+| **Workspace Analysis** | Rust | Scans any workspace for languages, manifests, dependencies, toolchains, TODO markers, and health evidence |
+| **Debugging Station** | Go | Samples live processes, memory, load, disks, listening ports, and network connections |
+| **Plugin Authoring** | Node.js | Browses bundled docs and API metadata, scaffolds plugins, edits source, and calls `llm.complete` |
 
 Each one is an independent process built from `plugin-sources/<name>/`. Open
 them from the sidebar and interact with the controls; all state lives in the
 plugin process and every update crosses stdio.
 
 Plugin rows are ordered by the optional `order` field on each surface, then
-alphabetically by title. The examples set `order` to Hello, Dashboard, Tasks,
-Focus.
+alphabetically by title. The examples set `order` to Dashboard, Workspace
+Analysis, Debugging Station, Plugin Authoring.
+
+The authoring station can ask a configured provider for text through
+`llm.complete`. The host runs a separate, text-only, read-only session on a
+worker thread; plugins never receive provider credentials or the Operator app
+token. The app's Background model setting selects the default provider/model.
 
 The app data directory also enables plugins without an environment variable:
 
@@ -59,13 +64,16 @@ With neither location populated, the app is unchanged.
 3. On `initialize`, respond with the protocol version and (optionally) surfaces.
 4. On `ui.open`, send a `ui.set` containing a native UI tree.
 5. On `ui.event`, update your state and send another `ui.set`.
-6. If you need app data, send a request such as `workspace.info` or
-   `storage.get`; see [HOST_API.md](HOST_API.md).
+6. If you need app data, send a request such as `workspace.info`,
+   `storage.get`, `host.describe`, or `llm.complete`; see
+   [HOST_API.md](HOST_API.md).
 7. Exit on `shutdown`.
 
 See [PROTOCOL.md](PROTOCOL.md) for the complete contract, and
-[hello/index.js](../plugin-sources/hello/index.js) or
-[focus/main.py](../plugin-sources/focus/main.py) for working implementations.
+[debugging-station/main.go](../plugin-sources/debugging-station/main.go) or
+[authoring-station/index.js](../plugin-sources/authoring-station/index.js) for
+working implementations. The authoring plugin also bundles a doc browser and
+scaffold templates for all four languages.
 
 ## Caveats
 

@@ -20,7 +20,12 @@ use gpui::{
 use monocode_core::visual::Node;
 use monocode_plugin_host::{HostEvent, HostOptions, PluginManifest, PluginRuntime};
 use std::{
-    cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, sync::mpsc::Receiver,
+    cell::RefCell,
+    collections::HashMap,
+    path::PathBuf,
+    rc::Rc,
+    sync::mpsc::Receiver,
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -94,6 +99,7 @@ fn rewrite_handlers(node: &mut Node, map: &mut HashMap<String, String>) {
         Node::Button { handler, .. }
         | Node::Toggle { handler, .. }
         | Node::Input { handler, .. }
+        | Node::CodeEditor { handler, .. }
         | Node::Select { handler, .. }
         | Node::Slider { handler, .. }
         | Node::Tabs { handler, .. } => Some(handler),
@@ -191,7 +197,8 @@ impl PluginSurfaceHost {
             .data_dir
             .as_ref()
             .map(|dir| dir.join("plugin-logs"));
-        let host_api = HostApi::new(workspace_root, location.data_dir.clone());
+        let host_api = HostApi::new(workspace_root, location.data_dir.clone())
+            .with_plugin_dir(location.root.clone());
         let options = HostOptions {
             app_version: env!("CARGO_PKG_VERSION").into(),
             data_dir: location.data_dir,
@@ -308,8 +315,36 @@ impl PluginSurfaceHost {
                 method,
                 params,
             } => {
-                let result = self.host_api.call(&plugin_id, &method, params);
-                self.runtime.respond(&plugin_id, id, result);
+                if method == "llm.providers" {
+                    let result = self.host_api.providers(cx);
+                    self.runtime.respond(&plugin_id, id, result);
+                } else if method == "llm.complete" {
+                    match self.host_api.prepare_completion(cx, params) {
+                        Ok(completion) => {
+                            let runtime = self.runtime.clone();
+                            let provider = completion.provider.clone();
+                            let model = completion.model.clone();
+                            std::thread::spawn(move || {
+                                let result = monocode_core::provider::run_text(
+                                    completion.request,
+                                    Arc::new(AtomicBool::new(false)),
+                                )
+                                .map(|text| {
+                                    serde_json::json!({
+                                        "text": text,
+                                        "provider": provider,
+                                        "model": model,
+                                    })
+                                });
+                                runtime.respond(&plugin_id, id, result);
+                            });
+                        }
+                        Err(error) => self.runtime.respond(&plugin_id, id, Err(error)),
+                    }
+                } else {
+                    let result = self.host_api.call(&plugin_id, &method, params);
+                    self.runtime.respond(&plugin_id, id, result);
+                }
                 false
             }
             HostEvent::Offline { plugin_id, reason } => {

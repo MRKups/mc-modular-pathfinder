@@ -9,8 +9,8 @@ that each have a real job.
 |---|---|---|---|
 | **Dashboard** | Python | Data visualization workbench for CSV/TSV/JSON in the workspace | Charts, gauges, donuts, heatmaps, progress, stats, tables, dynamic `ui.set`, live file reload |
 | **Workspace Analysis** | Rust | Dynamic analysis and health of any reasonable codebase | Filesystem scanning, manifests, dependencies, TODOs, toolchain checks |
-| **Debugging Station** | Go | Live system inspection | Processes, CPU/load, memory, disks, network connections, listening ports, live refresh |
-| **Plugin Authoring** | Node.js | Design, scaffold, document, and generate plugins | Docs/API browser, file scaffolding, source editor, LLM generation |
+| **Debugging Station** | Go | Build-system detection and live system inspection | Manifest/script/task detection, tool checks, processes, memory, disks, sockets, live refresh |
+| **Plugin Authoring** | Node.js | Design, scaffold, document, and generate plugins | Vertical docs/API/scaffold/generate/editor pages, step wizard, source editor, LLM generation |
 
 ## Language decision
 
@@ -43,11 +43,20 @@ that each have a real job.
 
 ### Debugging Station
 
-- Read-only. Never kills processes or changes sockets.
+- Read-only. Never kills processes, changes sockets, or executes builds.
+- Left vertical pages: **Build**, **Processes**, **Network**, **System**.
+- Detects Node (npm, pnpm, yarn, bun), Cargo, Go modules, Python
+  (pip, uv, poetry), Make, Task, Just, Maven, Gradle, CMake, Composer,
+  Bundler, Deno, .NET, and Docker manifests up to four levels down.
+- Reads package scripts, Make targets, Task tasks, Just recipes, Cargo bins,
+  Python scripts, Composer and Deno tasks.
+- Infers install/build/test/lint/format commands and checks tool availability
+  and versions on `PATH`.
 - Samples `ps`, load, memory, `df`, and `lsof`/`netstat`.
 - Gracefully degrades when a command or permission is unavailable.
 - Processes can be filtered and sorted by CPU, memory, name, or PID.
 - Network tab lists listeners, established connections, and socket states.
+- No charts, donuts, or gauges; the station is tables and live evidence.
 
 ### Plugin Authoring
 
@@ -62,13 +71,18 @@ Platform work completed:
 
 Authoring station features:
 
-- Docs browser from bundled Markdown.
-- Live API/limits/provider tables from `host.describe` and `llm.providers`.
+- Wide layout with a left vertical rail: Guide, API, Scaffold, Generate, Editor.
+- Markdown docs render as native headings, prose, lists, tables, and code
+  blocks, not as one long code field.
+- Live API/limits/features/provider tables from `host.describe` and
+  `llm.providers`.
+- Four-step scaffold wizard: identity → destination → review → created.
 - Scaffolds Node, Python, Rust, or Go plugins with manifest, source, README, and
-  build files.
+  build files. Review shows every path before writing.
 - Loads and saves project files in the code editor.
-- Sends a system prompt and prompt to the selected provider, renders the
-  response, and can copy it into the editor.
+- Two-column Generate page: provider/system/prompt on the left, response on the
+  right. Sends one async `llm.complete` request and can copy the response into
+  the editor.
 
 ## Resolved decisions
 

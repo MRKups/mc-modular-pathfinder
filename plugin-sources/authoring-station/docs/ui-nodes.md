@@ -10,7 +10,14 @@ HTML, CSS, or JavaScript. The renderer is native GPUI.
 {"kind":"row","gap":8,"children":[]}
 {"kind":"grid","columns":2,"gap":12,"children":[]}
 {"kind":"card","gap":10,"children":[]}
+{"kind":"page_tabs","labels":["Guide","API"],"selected":0,"handler":"page","nav_width":210,
+ "children":[{"kind":"text","text":"Page body","size":"body","color":"ink"}]}
 ```
+
+`page_tabs` is a vertical tab rail plus one content child. Set `selected` to the
+active label and send a new tree when the user clicks another one. `nav_width`
+defaults to `210` and is clamped to `140–360`. The plugin page itself uses the
+full workspace body width; there is no 880 px cap.
 
 ## Content
 
@@ -39,6 +46,7 @@ HTML, CSS, or JavaScript. The renderer is native GPUI.
 {"kind":"select","label":"Sort","options":["CPU","Memory"],"selected":0,"handler":"sort"}
 {"kind":"slider","label":"Top groups","value":10,"min":3,"max":20,"step":1,"handler":"top"}
 {"kind":"tabs","labels":["Overview","Files"],"selected":0,"handler":"tab"}
+{"kind":"page_tabs","labels":["Overview","Files"],"selected":0,"handler":"tab","children":[]}
 {"kind":"code_editor","label":"Source","value":"console.log(1)","language":"js","height":360,"handler":"source","read_only":false}
 ```
 
@@ -52,6 +60,7 @@ Event values:
 | select | selected index |
 | slider | number |
 | tabs | selected index |
+| page_tabs | selected index |
 | code_editor | full text |
 
 The handler string is returned unchanged in `ui.event`. It must belong to the

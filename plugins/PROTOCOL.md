@@ -153,6 +153,7 @@ Sent when a native control fires. `value` is one of:
 | select | selected index (number) |
 | slider | number |
 | tabs | selected index (number) |
+| page_tabs | selected index (number) |
 
 The handler string must belong to the currently rendered tree. A plugin may
 reply with a `ui.set` to publish a new tree; if it does not, the current tree
@@ -247,7 +248,14 @@ Common nodes:
 {"kind":"select","label":"Choice","options":["A","B"],"selected":0,"handler":"choice"}
 {"kind":"slider","label":"Amount","value":50,"min":0,"max":100,"step":1,"handler":"amount"}
 {"kind":"tabs","labels":["One","Two"],"selected":0,"handler":"tab"}
+{"kind":"page_tabs","labels":["Guide","API"],"selected":0,"handler":"page","nav_width":210,
+ "children":[{"kind":"text","text":"Page body","size":"body","color":"ink"}]}
 ```
+
+`page_tabs` is a vertical navigation rail on the left with one content child on
+the right. The plugin sends the selected page's content and republishes when the
+selection changes. `nav_width` is optional (default `210`, range `140–360`).
+Plugin pages use the full workspace body width; there is no built-in page cap.
 
 Also available: `chart`, `gauge`, `donut`, `heatmap`, `progress`, `canvas`, and
 `scene`. Text sizes are `caption`, `small`, `body`, `subtitle`, `title`, `hero`.

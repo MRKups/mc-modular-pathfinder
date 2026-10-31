@@ -1281,12 +1281,13 @@ fn tree(state: &State) -> Value {
             },
             text(state.status.clone(), "small", "muted"),
             {
-                "kind": "tabs",
+                "kind": "page_tabs",
                 "labels": ["Overview", "Languages", "Dependencies", "Files", "TODO"],
                 "selected": state.tab,
-                "handler": "tab"
-            },
-            body
+                "handler": "tab",
+                "nav_width": 210,
+                "children": [body]
+            }
         ]
     })
 }

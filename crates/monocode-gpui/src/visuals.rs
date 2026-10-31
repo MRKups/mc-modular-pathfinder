@@ -763,6 +763,101 @@ impl VisualView {
                 }
                 tabs.into_any_element()
             }
+            Node::PageTabs {
+                labels,
+                selected,
+                handler,
+                nav_width,
+                children,
+            } => {
+                // Keep the rail usable in narrow windows without letting it
+                // take over the page content.
+                let rail_width = (*nav_width)
+                    .min((self.width.get() * 0.32).max(140.))
+                    .max(140.);
+                let mut rail = div()
+                    .id(SharedString::from(format!("visual-page-tabs-{key}")))
+                    .role(Role::TabList)
+                    .w(px(rail_width))
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.));
+                for (i, label) in labels.iter().enumerate() {
+                    let active = i == *selected;
+                    let handler = handler.clone();
+                    let keyboard = handler.clone();
+                    rail = rail.child(
+                        div()
+                            .id(SharedString::from(format!("visual-page-tab-{key}-{i}")))
+                            .debug_selector({
+                                let key = key.clone();
+                                move || format!("visual-page-tab-{key}-{i}")
+                            })
+                            .role(Role::Tab)
+                            .focusable()
+                            .tab_stop(true)
+                            .aria_label(label.clone())
+                            .aria_selected(active)
+                            .h(px(34.))
+                            .px(px(12.))
+                            .flex()
+                            .items_center()
+                            .rounded_md()
+                            .border_l_2()
+                            .border_color(if active {
+                                accent_color()
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .text_size(px(13.))
+                            .line_height(px(18.))
+                            .text_color(if active { content(1.) } else { content(0.62) })
+                            .when(active, |d| {
+                                d.bg(content(0.07)).font_weight(FontWeight::MEDIUM)
+                            })
+                            .cursor_pointer()
+                            .hover(move |s| {
+                                if active {
+                                    s.bg(content(0.07)).text_color(content(1.))
+                                } else {
+                                    s.bg(content(0.05)).text_color(content(1.))
+                                }
+                            })
+                            .focus_visible(move |s| s.bg(content(0.08)))
+                            .child(label.clone())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.dispatch(&handler, json!(i), cx)
+                            }))
+                            .on_key_down(cx.listener(move |this, event, _, cx| {
+                                if activated(event) {
+                                    this.dispatch(&keyboard, json!(i), cx);
+                                    cx.stop_propagation();
+                                }
+                            })),
+                    );
+                }
+                let content = children
+                    .first()
+                    .map(|child| self.node(child, format!("{key}/0"), cx))
+                    .unwrap_or_else(|| div().into_any_element());
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .items_start()
+                    .gap(px(24.))
+                    .child(rail)
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("visual-page-panel-{key}")))
+                            .role(Role::TabPanel)
+                            .flex_1()
+                            .min_w_0()
+                            .child(content),
+                    )
+                    .into_any_element()
+            }
             Node::Input {
                 label,
                 value,
@@ -1242,6 +1337,7 @@ impl Render for VisualView {
             div().into_any_element()
         };
         self.inputs.retain(|key, _| self.active.contains(key));
+        self.editors.retain(|key, _| self.active.contains(key));
         self.tracks.retain(|key, _| self.active.contains(key));
         self.orbits.retain(|key, _| self.active.contains(key));
         self.scene_cache.retain(|key, _| self.active.contains(key));
@@ -1379,7 +1475,8 @@ fn node_at<'a>(mut node: &'a Node, key: &str) -> Option<&'a Node> {
             Node::Column { children, .. }
             | Node::Row { children, .. }
             | Node::Grid { children, .. }
-            | Node::Card { children, .. } => children.get(index)?,
+            | Node::Card { children, .. }
+            | Node::PageTabs { children, .. } => children.get(index)?,
             _ => return None,
         };
     }

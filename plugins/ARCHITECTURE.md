@@ -187,6 +187,8 @@ When the user clicks a plugin row:
    numeric ids, validates it, and updates the surface's `VisualView`.
 5. The shell renders the plugin page in the workspace body and keeps the
    project tools panel available on the right.
+6. Plugin bodies use the full workspace body width. `PageTabs` provides a native
+   vertical navigation rail with one content page; there is no 880 px cap.
 
 The host caches the last tree even while the surface is closed, so a plugin can
 continue work in the background and have a current tree ready when reopened.

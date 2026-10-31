@@ -102,7 +102,8 @@ fn rewrite_handlers(node: &mut Node, map: &mut HashMap<String, String>) {
         | Node::CodeEditor { handler, .. }
         | Node::Select { handler, .. }
         | Node::Slider { handler, .. }
-        | Node::Tabs { handler, .. } => Some(handler),
+        | Node::Tabs { handler, .. }
+        | Node::PageTabs { handler, .. } => Some(handler),
         _ => None,
     };
     if let Some(handler) = handler {
@@ -115,7 +116,8 @@ fn rewrite_handlers(node: &mut Node, map: &mut HashMap<String, String>) {
         Node::Column { children, .. }
         | Node::Row { children, .. }
         | Node::Grid { children, .. }
-        | Node::Card { children, .. } => {
+        | Node::Card { children, .. }
+        | Node::PageTabs { children, .. } => {
             for child in children {
                 rewrite_handlers(child, map);
             }
@@ -654,7 +656,7 @@ impl Render for PluginSurfaceHost {
                     .min_h_0()
                     .overflow_y_scroll()
                     .p(px(24.))
-                    .child(div().w_full().max_w(px(880.)).mx_auto().child(body)),
+                    .child(div().w_full().min_w_0().child(body)),
             )
     }
 }
@@ -804,7 +806,16 @@ mod tests {
             "gap": 8,
             "children": [
                 {"kind": "button", "label": "Click", "handler": "click", "disabled": false},
-                {"kind": "input", "label": "Name", "value": "", "placeholder": "Name", "handler": "name"}
+                {"kind": "input", "label": "Name", "value": "", "placeholder": "Name", "handler": "name"},
+                {
+                    "kind": "page_tabs",
+                    "labels": ["One", "Two"],
+                    "selected": 0,
+                    "handler": "page",
+                    "children": [
+                        {"kind": "button", "label": "Inner", "handler": "inner", "disabled": false}
+                    ]
+                }
             ]
         }))
         .unwrap();
@@ -813,6 +824,8 @@ mod tests {
         node.validate().unwrap();
         assert_eq!(handlers.get("0").map(String::as_str), Some("click"));
         assert_eq!(handlers.get("1").map(String::as_str), Some("name"));
+        assert_eq!(handlers.get("2").map(String::as_str), Some("page"));
+        assert_eq!(handlers.get("3").map(String::as_str), Some("inner"));
     }
 
     #[gpui::test]

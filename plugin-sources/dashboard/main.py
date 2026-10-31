@@ -1522,16 +1522,19 @@ class Dashboard:
             body = self.data_tab()
         children: List[Dict[str, Any]] = [
             *self.header(),
-            {
-                "kind": "tabs",
-                "labels": ["Overview", "Explore", "Data"],
-                "selected": self.tab,
-                "handler": "tab",
-            },
         ]
         if self.status:
             children.append(text(self.status, "small", "muted"))
-        children.append(body)
+        children.append(
+            {
+                "kind": "page_tabs",
+                "labels": ["Overview", "Explore", "Data"],
+                "selected": self.tab,
+                "handler": "tab",
+                "nav_width": 210,
+                "children": [body],
+            }
+        )
         return {"kind": "column", "gap": 16, "children": children}
 
     def publish(self) -> None:

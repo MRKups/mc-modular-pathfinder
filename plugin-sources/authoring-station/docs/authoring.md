@@ -6,7 +6,8 @@ configured background model for help.
 
 ## Scaffold
 
-The scaffold form writes a complete starting package:
+The scaffold wizard has four steps: identity, destination, review, and created.
+Only the review step writes anything. It produces a complete starting package:
 
 - `plugin.json` with a valid id, command, and one surface.
 - A runnable program in Node.js, Python, Rust, or Go.
@@ -30,7 +31,8 @@ command, or protocol code. A plugin's `ui.set` can change while it runs.
 
 The Editor tab loads a project file by path, shows it in a syntax-highlighted
 code editor, and writes it back. Paths must stay inside the active project.
-Editing is intentionally plain: save, then build/restart to test.
+Editing is intentionally plain: save, then build/restart to test. All pages use
+a vertical rail on the left, and the station uses the full workspace width.
 
 ## Model assistance
 

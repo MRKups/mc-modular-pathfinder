@@ -326,6 +326,47 @@ fn dashboard_components_render_and_reject_invalid_data() {
 }
 
 #[test]
+fn page_tabs_default_the_nav_width_and_require_one_content_child() {
+    let node: Node = serde_json::from_value(json!({
+        "kind": "page_tabs",
+        "labels": ["Guide", "API"],
+        "selected": 1,
+        "handler": "7:0",
+        "children": [
+            {"kind": "text", "text": "Page body", "size": "body", "color": "ink"}
+        ]
+    }))
+    .unwrap();
+    node.validate().unwrap();
+    let Node::PageTabs {
+        nav_width,
+        selected,
+        ..
+    } = &node
+    else {
+        panic!("Expected page tabs")
+    };
+    assert_eq!(*nav_width, 210.);
+    assert_eq!(*selected, 1);
+
+    let bad: Node = serde_json::from_value(json!({
+        "kind": "page_tabs",
+        "labels": ["Guide"],
+        "selected": 0,
+        "handler": "7:0",
+        "children": [
+            {"kind": "text", "text": "One", "size": "body", "color": "ink"},
+            {"kind": "text", "text": "Two", "size": "body", "color": "ink"}
+        ]
+    }))
+    .unwrap();
+    assert!(bad
+        .validate()
+        .unwrap_err()
+        .contains("at most one content child"));
+}
+
+#[test]
 fn code_editor_is_bounded_and_read_only_defaults_false() {
     let node: Node = serde_json::from_value(json!({
         "kind": "code_editor",

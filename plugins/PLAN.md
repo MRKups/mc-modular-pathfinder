@@ -42,8 +42,8 @@
 |---|---|---|
 | **Dashboard** | Python | Data workbench for workspace CSV/TSV/JSON |
 | **Workspace Analysis** | Rust | Dynamic repository analysis and health evidence |
-| **Debugging Station** | Go | Live process, memory, disk, and network inspection |
-| **Plugin Authoring** | Node.js | Docs, scaffold generation, source editing, and LLM help |
+| **Debugging Station** | Go | Build-system detection, processes, sockets, and host inspection |
+| **Plugin Authoring** | Node.js | Docs, API reference, scaffold wizard, source editing, and LLM help |
 
 The languages follow the workload: Python for data shaping, Rust for fast
 repository walking, Go for OS inspection, Node for tooling and text generation.
@@ -117,6 +117,8 @@ Limits:
 - Navigating away sends `ui.close`; the plugin process stays alive.
 - `CodeEditor` is a native multiline syntax-highlighting node built on the
   existing file editor.
+- `PageTabs` is a native vertical tab rail with one content page. Plugin pages
+  use the full workspace body width; the old 880 px cap is gone.
 
 ## Host API
 

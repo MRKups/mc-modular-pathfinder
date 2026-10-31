@@ -98,6 +98,10 @@ pub struct Slice {
     pub color: ThemeColor,
 }
 
+fn default_page_nav_width() -> f32 {
+    210.
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Node {
@@ -220,6 +224,17 @@ pub enum Node {
         labels: Vec<String>,
         selected: usize,
         handler: String,
+    },
+    /// A page shell with a vertical navigation rail on the left. `children`
+    /// holds the selected page's content (at most one child); the plugin sends
+    /// a new tree when `selected` changes. `nav_width` is in logical pixels.
+    PageTabs {
+        labels: Vec<String>,
+        selected: usize,
+        handler: String,
+        #[serde(default = "default_page_nav_width")]
+        nav_width: f32,
+        children: Vec<Node>,
     },
     Canvas {
         width: f32,
@@ -569,6 +584,28 @@ impl Node {
                     budget.text(label, 128)?;
                 }
                 validate_handler(handler)?;
+            }
+            Self::PageTabs {
+                labels,
+                selected,
+                handler,
+                nav_width,
+                children,
+            } => {
+                if labels.is_empty() || labels.len() > 12 || *selected >= labels.len() {
+                    return Err("Page tabs need 1–12 labels and a valid selected index".into());
+                }
+                if children.len() > 1 {
+                    return Err("Page tabs accept at most one content child".into());
+                }
+                bounded(*nav_width as f64, 140., 360., "page tab nav width")?;
+                for label in labels {
+                    budget.text(label, 128)?;
+                }
+                validate_handler(handler)?;
+                children
+                    .iter()
+                    .try_for_each(|n| n.validate_with(depth + 1, budget))?;
             }
             Self::Canvas {
                 width,

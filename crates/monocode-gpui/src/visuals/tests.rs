@@ -441,6 +441,58 @@ fn remote_tree_forwards_events_and_accepts_plugin_updates(cx: &mut TestAppContex
 }
 
 #[gpui::test]
+fn remote_page_tabs_render_a_vertical_rail_and_forward_selection(cx: &mut TestAppContext) {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let on_event = {
+        let events = events.clone();
+        Rc::new(move |handler: &str, value: Value| {
+            events.borrow_mut().push((handler.to_string(), value));
+        })
+    };
+    let tree = Node::Column {
+        children: vec![Node::PageTabs {
+            labels: vec!["Guide".into(), "API".into()],
+            selected: 0,
+            handler: "page".into(),
+            nav_width: 210.,
+            children: vec![Node::Text {
+                text: "Guide body".into(),
+                size: TextSize::Body,
+                color: ThemeColor::Ink,
+            }],
+        }],
+        gap: 8.,
+    };
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| {
+            cx.new(|_| {
+                VisualView::remote(
+                    "remote-page-tabs-test".into(),
+                    "Remote page tabs".into(),
+                    tree,
+                    on_event.clone(),
+                )
+            })
+        })
+        .unwrap()
+    });
+    let visual = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("visual-page-tab-root/0-0").is_some(),
+        "the first rail item should render"
+    );
+    let bounds = visual
+        .debug_bounds("visual-page-tab-root/0-1")
+        .expect("the second rail item should render");
+    visual.simulate_click(bounds.center(), Default::default());
+    visual.run_until_parked();
+    assert_eq!(events.borrow().len(), 1);
+    assert_eq!(events.borrow()[0].0, "page");
+    assert_eq!(events.borrow()[0].1, json!(1));
+}
+
+#[gpui::test]
 fn remote_code_editor_renders_and_forwards_edits(cx: &mut TestAppContext) {
     cx.update(crate::input::bind);
     let events = Rc::new(RefCell::new(Vec::new()));

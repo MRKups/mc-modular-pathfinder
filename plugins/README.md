@@ -31,12 +31,13 @@ each marked with a small plug icon:
 |---|---|---|
 | **Dashboard** | Python | Discovers CSV/TSV/JSON data, shapes charts, tables, gauges, donuts, heatmaps, and live file updates |
 | **Workspace Analysis** | Rust | Scans any workspace for languages, manifests, dependencies, toolchains, TODO markers, and health evidence |
-| **Debugging Station** | Go | Samples live processes, memory, load, disks, listening ports, and network connections |
-| **Plugin Authoring** | Node.js | Browses bundled docs and API metadata, scaffolds plugins, edits source, and calls `llm.complete` |
+| **Debugging Station** | Go | Detects build systems and tasks, then samples live processes, memory, disks, and network connections |
+| **Plugin Authoring** | Node.js | Vertical docs/API/scaffold/generate/editor pages, a four-step scaffold wizard, and `llm.complete` |
 
 Each one is an independent process built from `plugin-sources/<name>/`. Open
 them from the sidebar and interact with the controls; all state lives in the
-plugin process and every update crosses stdio.
+plugin process and every update crosses stdio. Every multi-page example uses
+the native `page_tabs` vertical rail.
 
 Plugin rows are ordered by the optional `order` field on each surface, then
 alphabetically by title. The examples set `order` to Dashboard, Workspace
@@ -79,7 +80,8 @@ scaffold templates for all four languages.
 
 - Plugins are trusted programs, not a security sandbox. They run with your
   permissions.
-- Every plugin surface is a sidebar page with a full-content body. There are no
+- Every plugin surface is a sidebar page with a full-content body. There is no
+  plugin-specific width cap; use `page_tabs` for a left vertical page rail. There are no
   plugin title tabs.
 - A crashed plugin stays offline until the app restarts; its surface shows an
   offline/error state.

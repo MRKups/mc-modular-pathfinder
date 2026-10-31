@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Plugin Authoring Station: docs, scaffolding, a source editor, and one-shot
-// model assistance through the narrow llm.complete host API.
+// Plugin Authoring Station: a wide, vertical-tab workspace for reading plugin
+// docs, inspecting the host API, scaffolding a package, editing source, and
+// asking the configured background model for help.
 //
 // stdout is protocol traffic only; diagnostics go to stderr.
 
@@ -14,6 +15,21 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DOCS_DIR = path.join(HERE, "docs");
 const LANGUAGES = ["Node.js", "Python", "Rust", "Go"];
 const TABS = ["Guide", "API", "Scaffold", "Generate", "Editor"];
+const STEPS = ["Identity", "Destination", "Review", "Created"];
+const LANGUAGE_NOTES = [
+  "Node.js · readline over stdio, package.json with type: module.",
+  "Python · stdlib json and sys, no third-party dependencies.",
+  "Rust · serde_json, Cargo.toml, standalone [workspace].",
+  "Go · encoding/json, go.mod, no third-party dependencies.",
+];
+const METHOD_NOTES = {
+  "workspace.info": "Active project root and directory name.",
+  "storage.get": "Read one plugin-scoped JSON value.",
+  "storage.set": "Write one plugin-scoped JSON value.",
+  "host.describe": "Protocol, methods, limits, features, plugin directory.",
+  "llm.providers": "Installed text-capable providers and cached models.",
+  "llm.complete": "Async, text-only, read-only model completion.",
+};
 
 const state = {
   root: "",
@@ -33,12 +49,15 @@ const state = {
   generating: false,
   status: "",
   scaffold: {
+    step: 0,
     name: "",
     id: "",
     description: "",
     language: 0,
     target: "",
     files: [],
+    dir: "",
+    mainFile: "",
   },
   editor: {
     path: "",
@@ -86,26 +105,29 @@ function stat(label, value, detail, color) {
   return node;
 }
 
-function card(title, children) {
-  return { kind: "card", gap: 10, children: [text(title, "subtitle", "ink"), ...children] };
+function card(title, children, gap = 10) {
+  return {
+    kind: "card",
+    gap,
+    children: [text(title, "subtitle", "ink"), ...children],
+  };
 }
 
 function table(columns, rows) {
+  const safeColumns = columns.map((column) => clean(column).slice(0, 256)).slice(0, 24);
   return {
     kind: "table",
-    columns: columns.map((column) => clean(column).slice(0, 256)).slice(0, 24),
+    columns: safeColumns,
     rows: rows
       .slice(0, 250)
-      .map((row) => row.slice(0, 24).map((cell) => clip(cell, 2048))),
+      .map((row) =>
+        safeColumns.map((_, index) => clip(row[index] ?? "", 2048)),
+      ),
   };
 }
 
 function button(label, handler, disabled = false) {
   return { kind: "button", label, handler, disabled };
-}
-
-function toggle(label, value, handler) {
-  return { kind: "toggle", label, value, handler };
 }
 
 function inputNode(label, value, placeholder, handler) {
@@ -129,15 +151,30 @@ function codeEditor(label, value, language, height, handler, readOnly = false) {
     label,
     value: clip(value, 64 * 1024),
     language,
-    height,
+    height: Math.max(120, Math.min(900, Math.round(height))),
     handler,
     read_only: readOnly,
+  };
+}
+
+function pageTabs(labels, selected, handler, children) {
+  return {
+    kind: "page_tabs",
+    labels,
+    selected,
+    handler,
+    nav_width: 210,
+    children,
   };
 }
 
 function publish() {
   notify("ui.set", { surface: SURFACE, tree: tree() });
 }
+
+/* ---------------------------------------------------------------------------
+ * Documentation
+ * ------------------------------------------------------------------------ */
 
 function loadDocs() {
   try {
@@ -150,7 +187,7 @@ function loadDocs() {
       return {
         name,
         title: name.replace(/\.md$/, "").replace(/[-_]/g, " "),
-        content: content.slice(0, 20000),
+        content: content.slice(0, 40000),
       };
     });
     state.docIndex = Math.max(0, Math.min(state.docIndex, state.docs.length - 1));
@@ -159,6 +196,150 @@ function loadDocs() {
     state.describeError = `Cannot read bundled docs: ${error.message}`;
   }
 }
+
+function inlineMarkdown(value) {
+  return clean(value)
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/_([^_]+)_/g, "$1")
+    .trim();
+}
+
+/// A small Markdown reader for the bundled docs. It renders headings, prose,
+/// lists, code fences, and simple pipe tables as native nodes.
+function markdownNodes(markdown) {
+  const lines = clean(markdown).slice(0, 40000).split("\n");
+  const nodes = [];
+  let paragraph = [];
+  let truncated = false;
+
+  const flush = () => {
+    if (!paragraph.length) return;
+    nodes.push(text(inlineMarkdown(paragraph.join(" ")), "body", "muted"));
+    paragraph = [];
+  };
+  const push = (node) => {
+    if (nodes.length >= 180) {
+      truncated = true;
+      return false;
+    }
+    nodes.push(node);
+    return true;
+  };
+
+  let index = 0;
+  while (index < lines.length) {
+    if (truncated) break;
+    const line = lines[index];
+
+    if (/^\s*```/.test(line)) {
+      flush();
+      const language = line.trim().replace(/^```/, "").trim() || "txt";
+      const code = [];
+      index += 1;
+      while (index < lines.length && !/^\s*```/.test(lines[index])) {
+        code.push(lines[index]);
+        index += 1;
+      }
+      index += 1;
+      const source = code.join("\n");
+      if (source.trim()) {
+        const height = Math.max(140, Math.min(420, 42 + code.length * 19));
+        push(codeEditor("Code block", source, language, height, "doc_code", true));
+      }
+      continue;
+    }
+
+    if (/^\s*$/.test(line)) {
+      flush();
+      index += 1;
+      continue;
+    }
+
+    const heading = /^(#{1,4})\s+(.*)$/.exec(line);
+    if (heading) {
+      flush();
+      const level = heading[1].length;
+      push(
+        text(
+          inlineMarkdown(heading[2]),
+          level === 1 ? "title" : level === 2 ? "subtitle" : "body",
+          "ink",
+        ),
+      );
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*\|/.test(line) && index + 1 < lines.length && /^[\s|:-]+$/.test(lines[index + 1])) {
+      flush();
+      const tableLines = [];
+      while (index < lines.length && /^\s*\|/.test(lines[index])) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+      const parsed = tableLines.map((row) =>
+        row
+          .trim()
+          .replace(/^\|/, "")
+          .replace(/\|$/, "")
+          .split("|")
+          .map((cell) => inlineMarkdown(cell)),
+      );
+      if (parsed.length >= 2) {
+        const columns = parsed[0];
+        const rows = parsed
+          .slice(2)
+          .filter((row) => row.some((cell) => cell.length));
+        push(table(columns, rows));
+      }
+      continue;
+    }
+
+    if (/^\s*[-*+]\s+/.test(line)) {
+      flush();
+      push(text("• " + inlineMarkdown(line.replace(/^\s*[-*+]\s+/, "")), "small", "muted"));
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*\d+\.\s+/.test(line)) {
+      flush();
+      push(text(inlineMarkdown(line), "small", "muted"));
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      flush();
+      push(text(inlineMarkdown(line.replace(/^\s*>\s?/, "")), "small", "muted"));
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) {
+      flush();
+      index += 1;
+      continue;
+    }
+
+    paragraph.push(line.trim());
+    index += 1;
+  }
+  flush();
+  if (truncated) {
+    nodes.push(text("Document rendered partially to stay inside the node budget.", "caption", "warning"));
+  }
+  return nodes.length ? nodes : [text("This document is empty.", "body", "muted")];
+}
+
+/* ---------------------------------------------------------------------------
+ * Helpers
+ * ------------------------------------------------------------------------ */
 
 function provider() {
   return state.providers[state.providerIndex] || null;
@@ -220,6 +401,22 @@ function slugify(value) {
 function validPluginId(value) {
   return /^[A-Za-z0-9._-]{1,96}$/.test(value);
 }
+
+function scaffoldSlug() {
+  return slugify(state.scaffold.name || state.scaffold.id || "my-plugin");
+}
+
+function scaffoldId() {
+  return clean(state.scaffold.id).trim() || `com.example.${scaffoldSlug()}`;
+}
+
+function scaffoldTarget() {
+  return clean(state.scaffold.target).trim() || `plugin-sources/${scaffoldSlug()}`;
+}
+
+/* ---------------------------------------------------------------------------
+ * Scaffold templates
+ * ------------------------------------------------------------------------ */
 
 function nodeTemplate(title) {
   return `import readline from "node:readline";
@@ -317,7 +514,7 @@ for line in sys.stdin:
 `;
 }
 
-function rustTemplate(title, _slug) {
+function rustTemplate(title) {
   return `use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 
@@ -410,12 +607,12 @@ func tree() map[string]any {
 	}
 }
 
-func publish() {
-	notify("ui.set", map[string]any{"surface": surface, "tree": tree()})
-}
-
 func notify(method string, params map[string]any) {
 	send(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+}
+
+func publish() {
+	notify("ui.set", map[string]any{"surface": surface, "tree": tree()})
 }
 
 func main() {
@@ -492,7 +689,7 @@ function scaffoldFiles(slug, title, pluginId, description, language) {
       path: "Cargo.toml",
       content: `[package]\nname = "${slug}"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\nserde_json = "1"\n\n[workspace]\n`,
     });
-    files.push({ path: "src/main.rs", content: rustTemplate(title, slug) });
+    files.push({ path: "src/main.rs", content: rustTemplate(title) });
   } else {
     files.push({
       path: "go.mod",
@@ -509,13 +706,13 @@ function scaffoldFiles(slug, title, pluginId, description, language) {
 
 function createScaffold() {
   try {
-    const slug = slugify(state.scaffold.name || state.scaffold.id);
+    const slug = scaffoldSlug();
     const title = clean(state.scaffold.name).trim() || slug;
-    const pluginId = clean(state.scaffold.id).trim() || `com.example.${slug}`;
+    const pluginId = scaffoldId();
     if (!validPluginId(pluginId)) {
       throw new Error("Plugin id must use 1–96 letters, digits, dots, underscores, or hyphens.");
     }
-    const targetInput = state.scaffold.target.trim() || `plugin-sources/${slug}`;
+    const targetInput = scaffoldTarget().replace(/\\/g, "/");
     const target = insideRoot(targetInput);
     if (fs.existsSync(target) && fs.readdirSync(target).length > 0) {
       throw new Error(`Refusing to overwrite non-empty directory: ${targetInput}`);
@@ -536,10 +733,6 @@ function createScaffold() {
         fs.chmodSync(destination, 0o755);
       }
     }
-    state.scaffold.files = files.map((file) => ({
-      path: path.posix.join(targetInput.replace(/\\/g, "/"), file.path),
-      bytes: Buffer.byteLength(file.content),
-    }));
     const mainFile =
       state.scaffold.language === 0
         ? "index.js"
@@ -548,7 +741,14 @@ function createScaffold() {
           : state.scaffold.language === 2
             ? "src/main.rs"
             : "main.go";
-    state.editor.path = path.posix.join(targetInput.replace(/\\/g, "/"), mainFile);
+    state.scaffold.files = files.map((file) => ({
+      path: path.posix.join(targetInput, file.path),
+      bytes: Buffer.byteLength(file.content),
+    }));
+    state.scaffold.dir = targetInput;
+    state.scaffold.mainFile = path.posix.join(targetInput, mainFile);
+    state.scaffold.step = 3;
+    state.editor.path = state.scaffold.mainFile;
     state.editor.content = fs.readFileSync(path.join(target, mainFile), "utf8");
     state.editor.language = languageFor(mainFile);
     state.editor.dirty = false;
@@ -617,7 +817,10 @@ function generate() {
       state.status = `Model error: ${error.message || "completion failed"}`;
     } else {
       state.response = clean(result && result.text ? result.text : "").slice(0, 32 * 1024);
-      const used = result && result.provider ? `${result.provider}${result.model ? ` · ${result.model}` : ""}` : "model";
+      const used =
+        result && result.provider
+          ? `${result.provider}${result.model ? ` · ${result.model}` : ""}`
+          : "model";
       state.status = state.response
         ? `Generated ${state.response.length} characters with ${used}`
         : `The model returned no text (${used}).`;
@@ -651,6 +854,10 @@ function refreshApi() {
   });
 }
 
+/* ---------------------------------------------------------------------------
+ * Event handling
+ * ------------------------------------------------------------------------ */
+
 function handleEvent(handler, value) {
   let republish = true;
   switch (handler) {
@@ -681,14 +888,59 @@ function handleEvent(handler, value) {
       republish = false;
       break;
     case "scaffold_language":
-      state.scaffold.language = Math.max(0, Math.min(LANGUAGES.length - 1, Number(value) || 0));
+      state.scaffold.language = Math.max(
+        0,
+        Math.min(LANGUAGES.length - 1, Number(value) || 0),
+      );
+      break;
+    case "scaffold_next":
+      if (state.scaffold.step === 0) {
+        state.scaffold.name =
+          clean(state.scaffold.name).trim() || "My Plugin";
+        if (!clean(state.scaffold.id).trim()) {
+          state.scaffold.id = `com.example.${slugify(state.scaffold.name)}`;
+        }
+        if (!clean(state.scaffold.target).trim()) {
+          state.scaffold.target = `plugin-sources/${slugify(state.scaffold.name)}`;
+        }
+        state.scaffold.step = 1;
+      } else if (state.scaffold.step === 1) {
+        state.scaffold.step = 2;
+      }
+      break;
+    case "scaffold_back":
+      state.scaffold.step = Math.max(0, state.scaffold.step - 1);
       break;
     case "scaffold_create":
       createScaffold();
       republish = false;
       break;
+    case "scaffold_open":
+      if (state.scaffold.mainFile) {
+        state.editor.path = state.scaffold.mainFile;
+        loadEditor();
+        state.tab = 4;
+      }
+      break;
+    case "scaffold_reset":
+      state.scaffold = {
+        step: 0,
+        name: "",
+        id: "",
+        description: "",
+        language: state.scaffold.language,
+        target: "",
+        files: [],
+        dir: "",
+        mainFile: "",
+      };
+      state.status = "Scaffold form reset.";
+      break;
     case "provider":
-      state.providerIndex = Math.max(0, Math.min(state.providers.length - 1, Number(value) || 0));
+      state.providerIndex = Math.max(
+        0,
+        Math.min(state.providers.length - 1, Number(value) || 0),
+      );
       chooseModel(state.providerIndex);
       break;
     case "model":
@@ -743,11 +995,19 @@ function handleEvent(handler, value) {
       refreshApi();
       republish = false;
       break;
+    case "doc_code":
+    case "response_view":
+      republish = false;
+      break;
     default:
       break;
   }
   if (republish) publish();
 }
+
+/* ---------------------------------------------------------------------------
+ * Pages
+ * ------------------------------------------------------------------------ */
 
 function guideTab() {
   if (!state.docs.length) {
@@ -761,25 +1021,33 @@ function guideTab() {
   }
   const doc = state.docs[state.docIndex] || state.docs[0];
   return {
-    kind: "column",
-    gap: 12,
+    kind: "grid",
+    columns: 2,
+    gap: 16,
     children: [
-      {
-        kind: "row",
-        gap: 8,
-        children: [
-          selectNode(
-            "Document",
-            state.docs.map((item) => item.title),
-            state.docIndex,
-            "doc",
-          ),
-          button("Reload docs", "reload_docs"),
-        ],
-      },
+      card("Bundled documentation", [
+        text(
+          "Everything in this rail ships with the plugin package. Use the selector to move between the protocol, host API, node reference, security notes, and authoring workflow.",
+          "small",
+          "muted",
+        ),
+        selectNode(
+          "Document",
+          state.docs.map((item) => item.title),
+          state.docIndex,
+          "doc",
+        ),
+        button("Reload docs", "reload_docs"),
+        text("Reference map", "caption", "faint"),
+        text("Quickstart · manifest, handshake, lifecycle", "small", "muted"),
+        text("Host API · storage, metadata, model access", "small", "muted"),
+        text("UI nodes · native controls and limits", "small", "muted"),
+        text("Authoring · scaffold, edit, build, restart", "small", "muted"),
+        text("Security · trust boundaries and review checks", "small", "muted"),
+      ]),
       card(doc.title, [
-        text(`${doc.name} · bundled with the plugin`, "caption", "muted"),
-        codeEditor("Documentation", doc.content, "md", 520, "doc_content", true),
+        text(`${doc.name} · bundled with the plugin package`, "caption", "muted"),
+        ...markdownNodes(doc.content),
       ]),
     ],
   };
@@ -787,10 +1055,22 @@ function guideTab() {
 
 function apiTab() {
   const describe = state.describe || {};
-  const methods = Array.isArray(describe.methods) ? describe.methods : [];
+  const methods = Array.isArray(describe.methods)
+    ? describe.methods
+    : Object.keys(METHOD_NOTES);
   const limits = describe.limits || {};
-  const methodRows = methods.map((method) => [method, "request"]);
-  const limitRows = Object.entries(limits).map(([name, value]) => [name, String(value)]);
+  const features = describe.features || {};
+  const methodRows = methods.map((method) => [
+    method,
+    METHOD_NOTES[method] || "Host request.",
+  ]);
+  const limitRows = Object.entries(limits)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, value]) => [name, String(value)]);
+  const featureRows = Object.entries(features).map(([name, value]) => [
+    name,
+    value ? "available" : "unavailable",
+  ]);
   const providerRows = state.providers.map((item) => [
     item.label,
     item.account || "default",
@@ -798,76 +1078,283 @@ function apiTab() {
     item.background ? "background" : "",
   ]);
   const children = [
-    text("Live API surface", "subtitle", "ink"),
+    text(
+      "Live values come from host.describe and llm.providers. Methods are additive; unknown methods return an error.",
+      "small",
+      "muted",
+    ),
     {
       kind: "grid",
-      columns: 4,
-      gap: 12,
+      columns: 2,
+      gap: 16,
       children: [
-        stat("Protocol", describe.protocol || "?", "wire contract", "accent"),
-        stat("App", describe.appVersion || "?", "Monocode", "ink"),
-        stat("Methods", String(methods.length || 6), "host requests", "series2"),
-        stat("Plugin dir", describe.pluginDir ? "configured" : "default", describe.pluginDir || "", "series6"),
+        card("Host methods", [
+          table(["Method", "What it returns"], methodRows),
+          text(
+            "Every call is a JSON-RPC request with an id. Notifications such as ui.set have no id.",
+            "caption",
+            "muted",
+          ),
+        ]),
+        card("Limits", [
+          limitRows.length
+            ? table(["Limit", "Value"], limitRows)
+            : text("host.describe did not return limits.", "body", "muted"),
+        ]),
       ],
     },
-    card("Host methods", [table(["Method", "Kind"], methodRows)]),
-    card("Limits", [table(["Limit", "Value"], limitRows)]),
-    card("Model providers", [
-      state.providersError
-        ? text(state.providersError, "small", "warning")
-        : table(["Provider", "Account", "Models", "Role"], providerRows),
-      text(
-        "llm.complete runs a separate, text-only, read-only session. Plugins never receive provider credentials or the Operator token.",
-        "caption",
-        "muted",
+    {
+      kind: "grid",
+      columns: 2,
+      gap: 16,
+      children: [
+        card("Features", [
+          featureRows.length
+            ? table(["Feature", "Status"], featureRows)
+            : text("No feature flags reported.", "body", "muted"),
+        ]),
+        card("Model providers", [
+          state.providersError
+            ? text(state.providersError, "small", "warning")
+            : providerRows.length
+              ? table(["Provider", "Account", "Models", "Role"], providerRows)
+              : text(
+                  "No text-capable provider is installed. Configure one in Settings to use the Generate page.",
+                  "body",
+                  "muted",
+                ),
+          text(
+            "llm.complete runs a separate, text-only, read-only session. Plugins never receive provider credentials or the Operator token.",
+            "caption",
+            "muted",
+          ),
+        ]),
+      ],
+    },
+    card("Wire shape", [
+      codeEditor(
+        "Request example",
+        `{"jsonrpc":"2.0","id":7,"method":"host.describe","params":{}}\n\n// result\n{"jsonrpc":"2.0","id":7,"result":{"protocol":1,"methods":[…],"limits":{…}}}`,
+        "json",
+        190,
+        "doc_code",
+        true,
       ),
     ]),
   ];
   if (state.describeError) {
     children.push(card("Describe error", [text(state.describeError, "body", "warning")]));
   }
-  return { kind: "column", gap: 12, children };
+  return { kind: "column", gap: 16, children };
 }
 
-function scaffoldTab() {
-  const filesRows = state.scaffold.files.map((file) => [file.path, `${file.bytes} B`]);
-  return {
-    kind: "column",
-    gap: 12,
-    children: [
-      card("Create a starting point", [
+function scaffoldSummaryRows() {
+  return [
+    ["Name", clean(state.scaffold.name).trim() || "My Plugin"],
+    ["Plugin id", scaffoldId()],
+    ["Language", LANGUAGES[state.scaffold.language]],
+    ["Target", scaffoldTarget()],
+    ["Description", clean(state.scaffold.description).trim() || "—"],
+  ];
+}
+
+function scaffoldPreviewFiles() {
+  const language = state.scaffold.language;
+  const target = scaffoldTarget().replace(/\\/g, "/");
+  const files = ["plugin.json", "README.md"];
+  if (language === 0) files.push("index.js", "package.json");
+  else if (language === 1) files.push("main.py");
+  else if (language === 2) files.push("Cargo.toml", "src/main.rs");
+  else files.push("go.mod", "main.go");
+  return files.map((file) => [path.posix.join(target, file), "generated"]);
+}
+
+function scaffoldStep() {
+  const step = state.scaffold.step;
+  if (step === 0) {
+    return {
+      kind: "grid",
+      columns: 2,
+      gap: 16,
+      children: [
+        card("Identity", [
+          inputNode("Display name", state.scaffold.name, "My Plugin", "scaffold_name"),
+          inputNode("Plugin id", state.scaffold.id, "com.example.my-plugin", "scaffold_id"),
+          inputNode(
+            "Description",
+            state.scaffold.description,
+            "What the plugin does",
+            "scaffold_description",
+          ),
+          text(
+            "A plugin is a separate executable that owns its state and publishes native UI trees. The id must be unique across installed plugins.",
+            "caption",
+            "muted",
+          ),
+        ]),
+        card("Language", [
+          selectNode("Implementation", LANGUAGES, state.scaffold.language, "scaffold_language"),
+          text(LANGUAGE_NOTES[state.scaffold.language], "body", "muted"),
+          text("Generated files", "caption", "faint"),
+          text("plugin.json · valid manifest with one surface", "small", "muted"),
+          text("Runnable source · handshake, ui.set, button event", "small", "muted"),
+          text("Build files · package.json, Cargo.toml, or go.mod", "small", "muted"),
+          text("README.md · build and restart instructions", "small", "muted"),
+        ]),
+      ],
+    };
+  }
+  if (step === 1) {
+    return {
+      kind: "grid",
+      columns: 2,
+      gap: 16,
+      children: [
+        card("Destination", [
+          inputNode(
+            "Target directory",
+            state.scaffold.target,
+            "plugin-sources/my-plugin",
+            "scaffold_target",
+          ),
+          text(`Resolved target: ${scaffoldTarget()}`, "small", "muted"),
+          text(
+            "The path is relative to the active project. Existing non-empty directories are refused.",
+            "caption",
+            "muted",
+          ),
+          text("Plugin id", "caption", "faint"),
+          text(scaffoldId(), "body", "ink"),
+        ]),
+        card("Files to write", [
+          table(["Path", "Source"], scaffoldPreviewFiles()),
+          text(
+            "The scaffold is a starting point, not a hidden runtime. Everything is ordinary project source.",
+            "caption",
+            "muted",
+          ),
+        ]),
+      ],
+    };
+  }
+  if (step === 2) {
+    return {
+      kind: "column",
+      gap: 16,
+      children: [
         {
           kind: "grid",
           columns: 2,
-          gap: 10,
+          gap: 16,
           children: [
-            inputNode("Display name", state.scaffold.name, "My Plugin", "scaffold_name"),
-            inputNode("Plugin id", state.scaffold.id, "com.example.my-plugin", "scaffold_id"),
-            inputNode("Description", state.scaffold.description, "What it does", "scaffold_description"),
-            inputNode("Target directory", state.scaffold.target, "plugin-sources/my-plugin", "scaffold_target"),
-            selectNode("Language", LANGUAGES, state.scaffold.language, "scaffold_language"),
+            card("Review", [
+              table(["Field", "Value"], scaffoldSummaryRows()),
+              text(
+                "Create writes the manifest, runnable source, build files, and README into the target directory.",
+                "caption",
+                "muted",
+              ),
+            ]),
+            card("Files to write", [table(["Path", "Source"], scaffoldPreviewFiles())]),
           ],
         },
-        {
+        card("Create", [
+          text(
+            "When the scaffold finishes, build it with npm run plugins:build and restart Monocode. Protocol v1 has no live plugin reload.",
+            "body",
+            "muted",
+          ),
+          {
+            kind: "row",
+            gap: 8,
+            children: [button("Create scaffold", "scaffold_create")],
+          },
+        ]),
+      ],
+    };
+  }
+  const rows = state.scaffold.files.map((file) => [file.path, `${file.bytes} B`]);
+  return {
+    kind: "column",
+    gap: 16,
+    children: [
+      card("Created", [
+        text(`Wrote ${rows.length} files under ${state.scaffold.dir || scaffoldTarget()}.`, "body", "positive"),
+        table(["Path", "Size"], rows),
+      ]),
+      {
+        kind: "grid",
+        columns: 2,
+        gap: 16,
+        children: [
+          card("Next steps", [
+            text("1. npm run plugins:build", "body", "ink"),
+            text("2. npm run plugins", "body", "ink"),
+            text("3. Open the new surface in the sidebar.", "body", "ink"),
+            text(
+              "Restart Monocode after changing the manifest or protocol code. A running plugin can still send new ui.set trees.",
+              "caption",
+              "muted",
+            ),
+          ]),
+          card("Open the source", [
+            text(
+              "The new entry point is ready in the Editor page. Review it, save changes, then rebuild.",
+              "body",
+              "muted",
+            ),
+            button("Open main file", "scaffold_open"),
+            button("Start another scaffold", "scaffold_reset"),
+          ]),
+        ],
+      },
+    ],
+  };
+}
+
+function scaffoldTab() {
+  const step = state.scaffold.step;
+  const body = scaffoldStep();
+  const navigation =
+    step < 3
+      ? {
           kind: "row",
           gap: 8,
           children: [
-            button("Create scaffold", "scaffold_create"),
-            text("Writes manifest, runnable source, README, and build files.", "caption", "muted"),
+            button("Back", "scaffold_back", step === 0),
+            button(step === 2 ? "Review is ready" : "Next", "scaffold_next", step === 2),
+            text(`${STEPS[step]} · step ${step + 1} of 4`, "caption", "muted"),
           ],
+        }
+      : {
+          kind: "row",
+          gap: 8,
+          children: [
+            text(`${STEPS[3]} · scaffold complete`, "caption", "positive"),
+            text("Open the entry point or start another package.", "caption", "muted"),
+          ],
+        };
+  return {
+    kind: "column",
+    gap: 16,
+    children: [
+      card("Scaffold wizard", [
+        {
+          kind: "progress",
+          label: `${STEPS[step]} (${step + 1}/4)`,
+          value: step + 1,
+          max: 4,
+          detail: "Identity → destination → review → created",
+          color: step === 3 ? "positive" : "accent",
         },
+        text(
+          "The wizard writes a complete package in four steps. Nothing is created until the review step.",
+          "small",
+          "muted",
+        ),
+        navigation,
       ]),
-      card("Files written", [
-        filesRows.length
-          ? table(["Path", "Size"], filesRows)
-          : text("No scaffold has been written in this session.", "body", "muted"),
-      ]),
-      card("After scaffolding", [
-        text("1. npm run plugins:build", "body", "ink"),
-        text("2. npm run plugins", "body", "ink"),
-        text("3. Open the new surface in the sidebar.", "body", "ink"),
-        text("Restart Monocode after changing protocol code or the manifest.", "caption", "muted"),
-      ]),
+      body,
     ],
   };
 }
@@ -875,53 +1362,66 @@ function scaffoldTab() {
 function generateTab() {
   const active = provider();
   return {
-    kind: "column",
-    gap: 12,
+    kind: "grid",
+    columns: 2,
+    gap: 16,
     children: [
       {
-        kind: "grid",
-        columns: 3,
-        gap: 10,
+        kind: "column",
+        gap: 16,
         children: [
-          selectNode("Provider", providerLabels(), state.providerIndex, "provider"),
-          inputNode("Model", state.model, "provider default", "model"),
-          stat(
-            "Status",
-            state.generating ? "generating" : state.providers.length ? "ready" : "no provider",
-            active ? active.label : state.providersError || "configure a provider in Settings",
-            state.generating ? "warning" : "accent",
-          ),
+          card("Provider", [
+            {
+              kind: "grid",
+              columns: 2,
+              gap: 10,
+              children: [
+                selectNode("Provider", providerLabels(), state.providerIndex, "provider"),
+                inputNode("Model", state.model, "provider default", "model"),
+              ],
+            },
+            stat(
+              "Status",
+              state.generating ? "generating" : state.providers.length ? "ready" : "no provider",
+              active ? active.label : state.providersError || "configure a provider in Settings",
+              state.generating ? "warning" : "accent",
+            ),
+            text(
+              "The host runs this request on a worker thread. The plugin stays responsive while it waits.",
+              "caption",
+              "muted",
+            ),
+          ]),
+          card("System prompt", [
+            codeEditor("System prompt", state.system, "md", 170, "system"),
+          ]),
+          card("Prompt", [
+            codeEditor("Prompt", state.prompt, "md", 260, "prompt"),
+            {
+              kind: "row",
+              gap: 8,
+              children: [
+                button(state.generating ? "Generating…" : "Generate", "generate", state.generating),
+                button("Clear", "clear"),
+              ],
+            },
+          ]),
         ],
       },
-      card("System prompt", [
-        codeEditor("System prompt", state.system, "md", 150, "system"),
-        text("Text-only and tool-free. The model cannot read or write the workspace.", "caption", "muted"),
-      ]),
-      card("Prompt", [
-        codeEditor(
-          "Prompt",
-          state.prompt,
-          "md",
-          210,
-          "prompt",
-        ),
+      card("Response", [
+        codeEditor("Generated response", state.response, "md", 620, "response_view", true),
         {
           kind: "row",
           gap: 8,
           children: [
-            button(state.generating ? "Generating…" : "Generate", "generate", state.generating),
-            button("Clear", "clear"),
             button("Use response in editor", "use_response", !state.response),
+            text(
+              "Text-only and tool-free. Review generated code before saving or running it.",
+              "caption",
+              "muted",
+            ),
           ],
         },
-      ]),
-      card("Response", [
-        codeEditor("Generated response", state.response, "md", 360, "response_view", true),
-        text(
-          "Review generated code before saving or running it. The model can be wrong.",
-          "caption",
-          "muted",
-        ),
       ]),
     ],
   };
@@ -930,21 +1430,37 @@ function generateTab() {
 function editorTab() {
   return {
     kind: "column",
-    gap: 12,
+    gap: 16,
     children: [
-      {
-        kind: "row",
-        gap: 8,
-        children: [
-          inputNode("Project file", state.editor.path, "plugin-sources/my-plugin/index.js", "editor_path"),
-          button("Load", "editor_load"),
-          button("Save", "editor_save"),
-          stat("State", state.editor.dirty ? "modified" : "clean", state.editor.language, state.editor.dirty ? "warning" : "positive"),
-        ],
-      },
+      card("File", [
+        {
+          kind: "row",
+          gap: 8,
+          children: [
+            inputNode(
+              "Project file",
+              state.editor.path,
+              "plugin-sources/my-plugin/index.js",
+              "editor_path",
+            ),
+            button("Load", "editor_load"),
+            button("Save", "editor_save"),
+            stat(
+              "State",
+              state.editor.dirty ? "modified" : "clean",
+              state.editor.language,
+              state.editor.dirty ? "warning" : "positive",
+            ),
+          ],
+        },
+        text(
+          "Paths are relative to the active project and cannot escape it. Protocol changes require a restart.",
+          "caption",
+          "muted",
+        ),
+      ]),
       card("Source", [
-        codeEditor("Source", state.editor.content, state.editor.language, 620, "editor_content"),
-        text("Paths are relative to the active project and cannot escape it.", "caption", "muted"),
+        codeEditor("Source", state.editor.content, state.editor.language, 700, "editor_content"),
       ]),
     ],
   };
@@ -957,25 +1473,58 @@ function tree() {
   else if (state.tab === 3) body = generateTab();
   else if (state.tab === 4) body = editorTab();
   else body = guideTab();
+
   const project = state.root || "waiting for workspace";
+  const protocol = state.describe ? state.describe.protocol : "?";
+  const active = provider();
+  const providerLabel = active
+    ? `${active.label}${state.model ? ` · ${state.model}` : ""}`
+    : state.providers.length
+      ? "no provider selected"
+      : "no provider installed";
   return {
     kind: "column",
     gap: 16,
     children: [
-      text("Plugin Authoring Station", "hero", "ink"),
-      text("Docs, scaffolds, source editing, and model assistance for Monocode plugins.", "body", "muted"),
-      text(`${project} · protocol ${state.describe ? state.describe.protocol : "?"}`, "caption", "faint"),
-      state.status ? text(state.status, "small", "muted") : text("Ready.", "small", "muted"),
       {
-        kind: "tabs",
-        labels: TABS,
-        selected: state.tab,
-        handler: "tab",
+        kind: "row",
+        gap: 16,
+        children: [
+          {
+            kind: "column",
+            gap: 4,
+            children: [
+              text("Plugin Authoring Station", "hero", "ink"),
+              text(
+                "Documentation, API reference, scaffolding, source editing, and model assistance in one wide workspace.",
+                "body",
+                "muted",
+              ),
+            ],
+          },
+          stat(
+            "Protocol",
+            String(protocol),
+            `${project} · ${providerLabel}`,
+            state.describeError ? "warning" : "accent",
+          ),
+        ],
       },
-      body,
+      text(
+        state.status || "Ready. Pick a page from the rail on the left.",
+        "small",
+        state.status.startsWith("Scaffold error") || state.status.startsWith("Model error")
+          ? "warning"
+          : "muted",
+      ),
+      pageTabs(TABS, state.tab, "tab", [body]),
     ],
   };
 }
+
+/* ---------------------------------------------------------------------------
+ * Protocol loop
+ * ------------------------------------------------------------------------ */
 
 loadDocs();
 const scanner = readline.createInterface({ input: process.stdin });

@@ -1,17 +1,17 @@
 {
   "id": "com.example.tasks",
   "name": "Tasks",
-  "version": "0.1.0",
   "protocol": 1,
-  "command": ["node", "index.js"],
+  "command": [
+    "./bin/tasks"
+  ],
   "cwd": ".",
   "ui": [
     {
       "id": "tasks",
       "title": "Tasks",
       "icon": "note",
-      "placements": ["sidebar"]
+      "order": 3
     }
-  ],
-  "permissions": []
+  ]
 }

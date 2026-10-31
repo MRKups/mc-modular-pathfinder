@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// A visual reference for the native plugin component tree. Every control here
-// is declarative data rendered by Monocode; this process only owns the state.
+// The hello example and the native component gallery in one plugin. Every
+// control here is declarative data rendered by Monocode; this process owns the
+// state.
 
 import readline from "node:readline";
 
@@ -10,10 +11,9 @@ const notify = (method, params) => send({ jsonrpc: "2.0", method, params });
 const respond = (id, result) => send({ jsonrpc: "2.0", id, result });
 
 const surface = {
-  id: "gallery",
-  title: "Component gallery",
+  id: "hello",
+  title: "Hello",
   icon: "sparkles",
-  placements: ["sidebar"],
 };
 
 const sections = ["Type", "Data", "Controls", "Canvas"];
@@ -40,6 +40,7 @@ let choice = 0;
 let amount = 42;
 let notifyEnabled = true;
 let clicks = 0;
+let workspace = "";
 
 function text(value, size = "body", color = "ink") {
   return { kind: "text", text: value, size, color };
@@ -319,19 +320,6 @@ function controls() {
         ]),
       ],
     },
-    {
-      kind: "card",
-      gap: 10,
-      children: [
-        text("Every interaction is a ui.event sent to this process", "body", "muted"),
-        {
-          kind: "tabs",
-          labels: sections,
-          selected: section,
-          handler: "section",
-        },
-      ],
-    },
   ];
 }
 
@@ -404,7 +392,56 @@ function tree() {
     kind: "column",
     gap: 16,
     children: [
-      text("Component gallery", "hero"),
+      text("Hello from a separate process", "hero"),
+      text(
+        "This UI is declarative data. Monocode draws it natively and sends clicks and typing back over stdin/stdout.",
+        "body",
+        "muted",
+      ),
+      {
+        kind: "grid",
+        columns: 3,
+        gap: 12,
+        children: [
+          {
+            kind: "stat",
+            label: "Clicks",
+            value: String(clicks),
+            color: "accent",
+          },
+          {
+            kind: "stat",
+            label: "Name",
+            value: name || "—",
+            color: "ink",
+          },
+          {
+            kind: "stat",
+            label: "Project",
+            value: workspace || "…",
+            color: "ink",
+          },
+        ],
+      },
+      {
+        kind: "row",
+        gap: 8,
+        children: [
+          {
+            kind: "button",
+            label: "Click me",
+            handler: "click",
+            disabled: false,
+          },
+          {
+            kind: "button",
+            label: "Reset",
+            handler: "reset",
+            disabled: false,
+          },
+        ],
+      },
+      text("Component gallery", "title"),
       text(
         "Everything below is one declarative tree produced by an external process and rendered natively.",
         "body",
@@ -426,7 +463,7 @@ function tree() {
 }
 
 function publish() {
-  notify("ui.set", { surface: "gallery", tree: tree() });
+  notify("ui.set", { surface: "hello", tree: tree() });
 }
 
 rl.on("line", (line) => {
@@ -434,21 +471,37 @@ rl.on("line", (line) => {
   try {
     message = JSON.parse(line);
   } catch (error) {
-    process.stderr.write(`gallery plugin: invalid JSON: ${error}\n`);
+    process.stderr.write(`hello plugin: invalid JSON: ${error}\n`);
+    return;
+  }
+
+  if (message.method === undefined && message.id !== undefined) {
+    if (message.id === 1 && message.result) {
+      workspace = message.result.name || "";
+      publish();
+    }
     return;
   }
 
   switch (message.method) {
     case "initialize":
       respond(message.id, { protocol: 1, ui: [surface] });
-      notify("log", { level: "info", message: "component gallery ready" });
+      notify("log", { level: "info", message: "hello plugin initialized" });
       publish();
+      send({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "workspace.info",
+        params: {},
+      });
       break;
     case "ui.open":
       publish();
       break;
+    case "ui.close":
+      break;
     case "ui.event": {
-      if (message.params.surface !== "gallery") break;
+      if (message.params.surface !== "hello") break;
       const handler = String(message.params.handler);
       const value = message.params.value;
       if (handler === "section") {

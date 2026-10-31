@@ -18,7 +18,7 @@ use gpui::{
     SharedString, Styled, Task, Window, div, prelude::*, px,
 };
 use monocode_core::visual::Node;
-use monocode_plugin_host::{HostEvent, HostOptions, Placement, PluginManifest, PluginRuntime};
+use monocode_plugin_host::{HostEvent, HostOptions, PluginManifest, PluginRuntime};
 use std::{
     cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, sync::mpsc::Receiver,
     time::Duration,
@@ -51,6 +51,7 @@ pub(crate) struct SidebarPlugin {
     pub surface_id: String,
     pub label: String,
     pub icon: String,
+    pub order: Option<i64>,
     pub selected: bool,
     pub offline: bool,
 }
@@ -125,6 +126,8 @@ fn plugin_icon(name: &str) -> &'static str {
         "search" => "search",
         "terminal" => "terminal",
         "git" => "git",
+        "dashboard" => "dashboard",
+        "clock" | "timer" => "clock",
         "plug" => "plug",
         _ => "sparkles",
     }
@@ -470,26 +473,23 @@ impl PluginSurfaceHost {
             .plugins
             .iter()
             .flat_map(|(plugin_id, entry)| {
-                entry
-                    .manifest
-                    .ui
-                    .iter()
-                    .filter(|surface| surface.placements.contains(&Placement::Sidebar))
-                    .map(move |surface| SidebarPlugin {
-                        key: surface_key(plugin_id, &surface.id),
-                        plugin_id: plugin_id.clone(),
-                        surface_id: surface.id.clone(),
-                        label: surface.title.clone(),
-                        icon: surface.icon.clone(),
-                        selected: active == Some(surface_key(plugin_id, &surface.id).as_str()),
-                        offline: entry.offline,
-                    })
+                entry.manifest.ui.iter().map(move |surface| SidebarPlugin {
+                    key: surface_key(plugin_id, &surface.id),
+                    plugin_id: plugin_id.clone(),
+                    surface_id: surface.id.clone(),
+                    label: surface.title.clone(),
+                    icon: surface.icon.clone(),
+                    order: surface.order,
+                    selected: active == Some(surface_key(plugin_id, &surface.id).as_str()),
+                    offline: entry.offline,
+                })
             })
             .collect::<Vec<_>>();
         entries.sort_by(|a, b| {
-            a.label
-                .to_lowercase()
-                .cmp(&b.label.to_lowercase())
+            a.order
+                .unwrap_or(i64::MAX)
+                .cmp(&b.order.unwrap_or(i64::MAX))
+                .then_with(|| a.label.to_lowercase().cmp(&b.label.to_lowercase()))
                 .then_with(|| a.key.cmp(&b.key))
         });
         entries
@@ -724,17 +724,42 @@ mod tests {
         serde_json::from_value(json!({
             "id": "com.test.adapter",
             "name": "Adapter test",
-            "version": "0.1.0",
             "protocol": 1,
             "command": ["unused"],
             "ui": [{
                 "id": "main",
                 "title": "Main",
-                "icon": "sparkles",
-                "placements": ["sidebar"]
+                "icon": "sparkles"
             }]
         }))
         .unwrap()
+    }
+
+    #[gpui::test]
+    fn sidebar_entries_follow_surface_order(cx: &mut TestAppContext) {
+        let manifest: PluginManifest = serde_json::from_value(json!({
+            "id": "com.test.order",
+            "name": "Order test",
+            "protocol": 1,
+            "command": ["unused"],
+            "ui": [
+                {"id": "third", "title": "Third", "order": 3},
+                {"id": "first", "title": "First", "order": 1},
+                {"id": "second", "title": "Second", "order": 2},
+                {"id": "alpha", "title": "Alpha"}
+            ]
+        }))
+        .unwrap();
+        let tree = json!({"kind": "text", "text": "Order", "size": "body", "color": "ink"});
+        let host = cx.update(|cx| cx.new(|cx| PluginSurfaceHost::with_surface(manifest, tree, cx)));
+        host.update(cx, |host, _| {
+            let labels = host
+                .sidebar_entries()
+                .into_iter()
+                .map(|entry| entry.label)
+                .collect::<Vec<_>>();
+            assert_eq!(labels, ["First", "Second", "Third", "Alpha"]);
+        });
     }
 
     #[test]

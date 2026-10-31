@@ -58,3 +58,10 @@ Desktop.ini
 
 # Local document preview mockup
 /work/mono-document-preview.html
+
+# Built plugin packages; sources live in plugin-sources/
+plugins/*/
+
+# Python bytecode from plugin builds
+__pycache__/
+*.pyc

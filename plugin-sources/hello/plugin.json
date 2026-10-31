@@ -1,17 +1,18 @@
 {
   "id": "com.example.hello",
   "name": "Hello",
-  "version": "0.1.0",
   "protocol": 1,
-  "command": ["node", "index.js"],
+  "command": [
+    "node",
+    "index.js"
+  ],
   "cwd": ".",
   "ui": [
     {
       "id": "hello",
       "title": "Hello",
       "icon": "sparkles",
-      "placements": ["sidebar"]
+      "order": 1
     }
-  ],
-  "permissions": []
+  ]
 }

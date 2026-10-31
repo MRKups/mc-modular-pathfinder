@@ -24,14 +24,12 @@ fn write_manifest(root: &Path) {
     let manifest = json!({
         "id": "com.test.echo",
         "name": "Echo",
-        "version": "0.1.0",
         "protocol": 1,
         "command": [env!("CARGO_BIN_EXE_test-plugin")],
         "ui": [{
             "id": "main",
             "title": "Test plugin",
-            "icon": "sparkles",
-            "placements": ["sidebar"]
+            "icon": "sparkles"
         }]
     });
     fs::write(root.join("plugin.json"), manifest.to_string()).unwrap();

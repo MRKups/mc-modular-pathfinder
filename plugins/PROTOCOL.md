@@ -5,10 +5,6 @@ process and exchanges one JSON object per line over stdin/stdout. The plugin
 owns its logic and state; Monocode owns the window and renders the plugin's
 declarative UI natively.
 
-**WASM is not part of this protocol version.** The contract is deliberately
-runtime-neutral, so a future host may run the same manifest and UI trees inside
-a WASM runtime.
-
 ## Directory layout
 
 ```text
@@ -16,6 +12,9 @@ plugins/hello/
   plugin.json     required manifest
   index.js        the plugin program (any executable works)
 ```
+
+This repository keeps development sources in `plugin-sources/`; the
+`npm run plugins` command assembles the runtime layout above under `plugins/`.
 
 ## Discovery
 
@@ -35,7 +34,6 @@ no plugin code runs and the app behaves exactly as before.
 {
   "id": "com.example.hello",
   "name": "Hello",
-  "version": "0.1.0",
   "protocol": 1,
   "command": ["node", "index.js"],
   "cwd": ".",
@@ -44,10 +42,9 @@ no plugin code runs and the app behaves exactly as before.
       "id": "hello",
       "title": "Hello",
       "icon": "sparkles",
-      "placements": ["sidebar"]
+      "order": 1
     }
-  ],
-  "permissions": []
+  ]
 }
 ```
 
@@ -55,12 +52,10 @@ no plugin code runs and the app behaves exactly as before.
 |---|---|
 | `id` | Required. 1–96 ASCII letters, digits, `.`, `_`, `-`. Unique across plugins. |
 | `name` | Required. 1–80 characters. Shown in the plugin surface. |
-| `version` | Required. 1–32 bytes. Informational in v1. |
 | `protocol` | Required. Must be `1`; other versions are rejected. |
 | `command` | Required non-empty argv array, not a shell string. |
 | `cwd` | Optional relative directory inside the plugin. Absolute paths and `..` are rejected. |
 | `ui` | Optional surfaces. At most one surface per `id`; each surface id is unique within the plugin. |
-| `permissions` | Reserved. v1 does not grant host capabilities. |
 
 A surface:
 
@@ -69,9 +64,10 @@ A surface:
 | `id` | Required. 1–96 ASCII letters, digits, `.`, `_`, `-`. |
 | `title` | Required. 1–80 characters. |
 | `icon` | Optional. Defaults to `sparkles`. |
-| `placements` | Optional. Defaults to `["sidebar"]`. `tab` is accepted for forward compatibility; phase 1 renders sidebar placements only. |
+| `order` | Optional integer. Lower numbers appear first; unordered surfaces follow alphabetically. |
 
-Unknown manifest fields are rejected so typos are visible.
+Every surface is a sidebar page. Unknown manifest fields are rejected so typos
+are visible.
 
 ## Transport
 
@@ -104,7 +100,7 @@ The plugin must answer within **5 seconds**:
 ```json
 {"jsonrpc":"2.0","id":1,"result":{
   "protocol":1,
-  "ui":[{"id":"hello","title":"Hello","icon":"sparkles","placements":["sidebar"]}]
+  "ui":[{"id":"hello","title":"Hello","icon":"sparkles"}]
 }}
 ```
 
@@ -272,8 +268,8 @@ plugin process                         Monocode
 ## Failure behavior
 
 - Handshake timeout, invalid response, or early exit → plugin marked offline.
-- A crashed plugin keeps its last tree visible with an error banner until the
-  app is restarted; automatic restart is deferred.
+- A crashed plugin stays offline and keeps its last tree visible with an error
+  banner until the app restarts.
 - Invalid or oversized messages are reported and ignored; an oversized or
   unparseable stream can end the plugin.
 - On app quit the host asks every plugin to exit, waits two seconds, then kills
@@ -283,8 +279,7 @@ plugin process                         Monocode
 
 A plugin process is **not sandboxed** by this protocol. It runs with the user's
 permissions, can read files, and can use the network. The declarative UI tree is
-safe data, but the plugin executable must be trusted. Capability permissions,
-OS sandboxing, and WASM isolation are future work.
+safe data, but the plugin executable must be trusted.
 
 ## Debugging
 

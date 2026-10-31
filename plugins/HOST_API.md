@@ -104,6 +104,3 @@ The current API is deliberately small:
 - `workspace.info`
 - `storage.get`
 - `storage.set`
-
-Good next candidates are `git.status`, `sessions.list`, `ui.open`, and
-`clipboard.write`. They should be added only when a plugin needs them.

@@ -6,8 +6,8 @@ Tauri desktop are out of scope.
 
 This document explains how plugins are discovered, executed, rendered, and
 integrated into the app. For the wire contract see [PROTOCOL.md](PROTOCOL.md);
-for usage and examples see [README.md](README.md); for the original milestones
-see [PLAN.md](PLAN.md).
+for usage and examples see [README.md](README.md); for implementation notes see
+[PLAN.md](PLAN.md).
 
 ## 1. Shape
 
@@ -17,9 +17,10 @@ stdin, writes JSON-RPC messages to stdout, and describes its UI as a declarative
 tree that the app renders with its existing native component model.
 
 ```text
-plugins/hello/
-  plugin.json                 manifest: id, command, surfaces
+plugin-sources/hello/
   index.js                    plugin process
+plugins/hello/
+  plugin.json                 runtime manifest: id, command, surfaces
 
         │  newline-delimited JSON-RPC 2.0 over stdin/stdout
         ▼
@@ -61,9 +62,8 @@ native visual schema, and the shell's navigation state.
 - **Thin integration.** The app starts the runtime only when a plugin directory
   exists. No plugin directory means no plugin process and no behavior change.
 - **Language agnostic.** `command` is an argv array. Any executable that speaks
-  the protocol can be a plugin; the examples use Node.js for iteration speed.
-- **Runtime neutral.** The manifest and UI contract can later be served by a
-  WASM host without changing plugin-authored UI trees.
+  the protocol can be a plugin. The examples use Node.js, Rust, Go, and
+  Python.
 - **Fixed host surface.** Plugins get app data only through the explicit
   method table in `plugin_host/api.rs`, not by reaching into shell or store
   internals.
@@ -125,6 +125,23 @@ adapter, not the protocol:
 The plugin badge uses the fallback icon `plug` in
 `crates/monocode-gpui/src/assets.rs`. The plugin's own leading icon is resolved
 by `plugin_icon`, with `sparkles` as the default.
+
+### 3.5 Plugin build
+
+`npm run plugins` builds the packages and then launches the native dev app with
+`MONOCODE_PLUGIN_DIR` set to `plugins/`. The build step scans
+`plugin-sources/` and assembles runnable packages under `plugins/`:
+
+- Node sources are copied.
+- Python sources are syntax-checked and copied.
+- Rust sources are built with `cargo build --release`; the binary is copied to
+  `plugins/<name>/bin/`.
+- Go sources are built with `go build`; the binary is copied to
+  `plugins/<name>/bin/`.
+
+`npm run plugins:build` runs only the build. The Monocode app build itself does
+not build plugins, so the app can stay inert when no plugin packages are
+present.
 
 ## 4. Lifecycle
 
@@ -196,9 +213,8 @@ The current surface is deliberately small:
 
 There is no separate host API version. Methods are additive; unknown methods
 return an error. App modules expose normal functions, and the single match in
-`plugin_host/api.rs` is the only place that knows plugin method names. Current
-methods are local and fast; a future slow method should hand work to a
-background task and reply when it finishes. See [HOST_API.md](HOST_API.md).
+`plugin_host/api.rs` is the only place that knows plugin method names. See
+[HOST_API.md](HOST_API.md).
 
 ### 4.6 Close and quit
 
@@ -209,20 +225,17 @@ background task and reply when it finishes. See [HOST_API.md](HOST_API.md).
   seconds per plugin, then kills anything still running. A `Drop` fallback also
   reaps children if the adapter is released early.
 - A crashed or offline plugin stays in the sidebar with an offline badge and
-  shows an offline/error state instead of taking down the app. Automatic
-  restart with backoff is deferred.
+  shows an offline/error state instead of taking down the app.
 
 ## 5. UI contribution model
 
 ### 5.1 Surfaces
 
-Each manifest surface can declare `placements`. Phase 1 renders `sidebar`
-placements. `tab` is accepted for forward compatibility but is not shown yet.
-
-Each sidebar surface becomes one row. A plugin with two sidebar surfaces gets
-two rows. Rows are sorted by label (case-insensitive, then by stable key) and
-appended after the built-in navigation items. Only one plugin surface is active
-at a time; opening another sends `ui.close` to the previous surface.
+Every manifest surface becomes a sidebar row. A plugin with two surfaces gets
+two rows. Rows are sorted by the optional surface `order`, then by label
+(case-insensitive, then stable key), and appended after the built-in navigation
+items. Only one plugin surface is active at a time; opening another sends
+`ui.close` to the previous surface.
 
 Plugin rows intentionally have no separate section header. They use the same
 row styling as Inbox, Notes, and Automations, with:
@@ -283,11 +296,9 @@ network. It also receives the app data directory at startup. Process isolation
 provides crash and UI isolation only; the host API is a contract, not an
 enforcement boundary.
 
-`permissions` exists in the manifest for forward compatibility but protocol v1
-does not enforce it. The current host API exposes workspace metadata and
-plugin-scoped storage only; there are no APIs for sessions, files, git, network,
-or notifications yet. Adding those requires deciding what each plugin may see,
-even if enforcement remains a trusted-plugin contract for now.
+There is no permission system. The host API exposes workspace metadata and
+plugin-scoped storage only. Outside that API, a plugin can access anything the
+user can.
 
 ## 8. Testing
 
@@ -308,9 +319,7 @@ Run the proof manually with:
 MONOCODE_PLUGIN_DIR="$PWD/plugins" npm run native:dev
 ```
 
-## 9. Boundaries and next steps
-
-Implemented in phase 1:
+## 9. Current shape
 
 - process discovery, spawning, handshake, shutdown, and crash visibility;
 - native declarative UI with interaction and live updates;
@@ -318,21 +327,5 @@ Implemented in phase 1:
   functional right project tools panel;
 - a fixed host API for workspace metadata and plugin-scoped storage;
 - file-backed plugin state and stderr logs;
-- examples covering controls, live updates, tables, charts, and a component
-  gallery.
-
-Deferred:
-
-- WASM or any in-process runtime;
-- plugin installation, updates, signing, or a marketplace;
-- broader host APIs and enforced permissions;
-- plugin-contributed title tabs (manifest placement is accepted but not shown);
-- automatic restart with backoff;
-- plugin-to-plugin communication;
-- mobile and legacy Tauri integration.
-
-The next host methods should be added only when a plugin needs them. Good
-candidates are `git.status`, `sessions.list`, `ui.open`, and `clipboard.write`.
-They should call existing app services through the same single dispatch point,
-so plugins gain capability without threading plugin-specific code through the
-rest of Monocode.
+- examples covering controls, live updates, tables, charts, a component
+  gallery, and a timer with stored session state.

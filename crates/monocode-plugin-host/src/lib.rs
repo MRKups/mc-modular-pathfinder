@@ -10,7 +10,5 @@ pub mod manifest;
 pub mod protocol;
 
 pub use host::{HostEvent, HostOptions, PluginReady, PluginRuntime, SurfaceTree};
-pub use manifest::{
-    Discovery, DiscoveryError, LoadedPlugin, Placement, PluginManifest, SurfaceDescriptor,
-};
+pub use manifest::{Discovery, DiscoveryError, LoadedPlugin, PluginManifest, SurfaceDescriptor};
 pub use protocol::PROTOCOL_VERSION;

@@ -1,0 +1,17 @@
+{
+  "id": "com.example.dashboard",
+  "name": "Dashboard",
+  "protocol": 1,
+  "command": [
+    "./bin/dashboard"
+  ],
+  "cwd": ".",
+  "ui": [
+    {
+      "id": "dashboard",
+      "title": "Dashboard",
+      "icon": "dashboard",
+      "order": 2
+    }
+  ]
+}

@@ -41,8 +41,7 @@ fn main() {
                         "ui": [{
                             "id": "main",
                             "title": "Test plugin",
-                            "icon": "sparkles",
-                            "placements": ["sidebar"]
+                            "icon": "sparkles"
                         }]
                     }),
                 );

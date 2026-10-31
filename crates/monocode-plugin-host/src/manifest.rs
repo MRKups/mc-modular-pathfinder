@@ -7,19 +7,6 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-/// Where a plugin's surface may appear. Phase 1 renders `Sidebar`; `Tab` is
-/// accepted so manifests do not change when tab placement is implemented.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Placement {
-    Sidebar,
-    Tab,
-}
-
-fn default_placement() -> Vec<Placement> {
-    vec![Placement::Sidebar]
-}
-
 fn default_icon() -> String {
     "sparkles".into()
 }
@@ -31,8 +18,9 @@ pub struct SurfaceDescriptor {
     pub title: String,
     #[serde(default = "default_icon")]
     pub icon: String,
-    #[serde(default = "default_placement")]
-    pub placements: Vec<Placement>,
+    /// Lower numbers appear first. Unordered surfaces follow in title order.
+    #[serde(default)]
+    pub order: Option<i64>,
 }
 
 impl SurfaceDescriptor {
@@ -49,9 +37,6 @@ impl SurfaceDescriptor {
         if self.icon.trim().is_empty() || self.icon.len() > 64 {
             return Err("Surface icon must contain 1–64 bytes".into());
         }
-        if self.placements.is_empty() {
-            return Err("Surface placements must not be empty".into());
-        }
         Ok(())
     }
 }
@@ -61,7 +46,6 @@ impl SurfaceDescriptor {
 pub struct PluginManifest {
     pub id: String,
     pub name: String,
-    pub version: String,
     pub protocol: u32,
     /// argv, never a shell string. Paths with spaces therefore work.
     pub command: Vec<String>,
@@ -70,8 +54,6 @@ pub struct PluginManifest {
     pub cwd: Option<String>,
     #[serde(default)]
     pub ui: Vec<SurfaceDescriptor>,
-    #[serde(default)]
-    pub permissions: Vec<String>,
 }
 
 impl PluginManifest {
@@ -84,9 +66,6 @@ impl PluginManifest {
         }
         if self.name.trim().is_empty() || self.name.chars().count() > 80 {
             return Err("Plugin name must contain 1–80 characters".into());
-        }
-        if self.version.trim().is_empty() || self.version.len() > 32 {
-            return Err("Plugin version must contain 1–32 bytes".into());
         }
         if self.protocol != PROTOCOL_VERSION {
             return Err(format!(
@@ -240,7 +219,6 @@ mod tests {
             r#"{{
                 "id": "com.example.test",
                 "name": "Test",
-                "version": "0.1.0",
                 "protocol": 1,
                 "command": [{command}],
                 "ui": [{{"id": "main", "title": "Main"}}]
@@ -249,11 +227,20 @@ mod tests {
     }
 
     #[test]
-    fn a_valid_manifest_defaults_the_icon_and_placement() {
+    fn a_valid_manifest_defaults_the_icon_and_order() {
         let manifest = manifest(&minimal(r#""node""#)).unwrap();
         manifest.validate().unwrap();
         assert_eq!(manifest.ui[0].icon, "sparkles");
-        assert_eq!(manifest.ui[0].placements, vec![Placement::Sidebar]);
+        assert_eq!(manifest.ui[0].order, None);
+    }
+
+    #[test]
+    fn explicit_surface_order_is_kept() {
+        let raw =
+            minimal(r#""node""#).replace(r#""title": "Main""#, r#""title": "Main", "order": 2"#);
+        let manifest = manifest(&raw).unwrap();
+        manifest.validate().unwrap();
+        assert_eq!(manifest.ui[0].order, Some(2));
     }
 
     #[test]

@@ -866,14 +866,12 @@ mod tests {
         let manifest = serde_json::from_value(serde_json::json!({
             "id": "com.test.adapter",
             "name": "Adapter test",
-            "version": "0.1.0",
             "protocol": 1,
             "command": ["unused"],
             "ui": [{
                 "id": "main",
                 "title": "Main",
-                "icon": "sparkles",
-                "placements": ["sidebar"]
+                "icon": "sparkles"
             }]
         }))
         .unwrap();

@@ -1,0 +1,17 @@
+{
+  "id": "com.example.pulse",
+  "name": "Pulse",
+  "version": "0.1.0",
+  "protocol": 1,
+  "command": ["node", "index.js"],
+  "cwd": ".",
+  "ui": [
+    {
+      "id": "pulse",
+      "title": "Pulse",
+      "icon": "zap",
+      "placements": ["sidebar"]
+    }
+  ],
+  "permissions": []
+}

@@ -10,9 +10,18 @@ existing visual component tree. No plugin code runs inside the app.
 MONOCODE_PLUGIN_DIR="$PWD/plugins" npm run native:dev
 ```
 
-The sidebar gains a **Plugins → Hello** item. Click it to open a native surface
-backed by `plugins/hello/index.js`. The button counter and name field round-trip
-through the external Node process.
+The sidebar gains a **Plugins** section with four examples:
+
+| Plugin | What it demonstrates |
+|---|---|
+| **Hello** | Text, input, button, counter, reset, simple state |
+| **Pulse** | Live 2-second updates, stats, charts, gauge, donut, progress, heatmap, table |
+| **Tasks** | Dynamic lists, toggles, input + add, select filter, per-item remove |
+| **Component gallery** | Tabs, type scale, colors, every data widget, controls, canvas shapes |
+
+Each one is an independent Node process under `plugins/<name>/index.js`. Open
+them from the sidebar and interact with the controls; all state lives in the
+plugin process and every update crosses stdio.
 
 The app data directory also enables plugins without an environment variable:
 

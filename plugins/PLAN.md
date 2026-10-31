@@ -396,7 +396,7 @@ clear error.
 MONOCODE_PLUGIN_DIR="$PWD/plugins" npm run native:dev
 ```
 
-1. App startup starts the external Node process (verified).
+1. App startup starts all four external Node processes (verified together).
 2. Sidebar shows the plugin item (GPUI integration test).
 3. Clicking it opens the plugin surface (GPUI integration test).
 4. Typing and clicking the button sends events to the Node process (host
@@ -438,6 +438,15 @@ plugins/
   PROTOCOL.md
   README.md
   hello/
+    plugin.json
+    index.js
+  pulse/
+    plugin.json
+    index.js
+  tasks/
+    plugin.json
+    index.js
+  gallery/
     plugin.json
     index.js
 

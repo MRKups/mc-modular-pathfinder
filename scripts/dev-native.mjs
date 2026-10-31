@@ -1,9 +1,16 @@
 import { spawn } from "node:child_process";
+import { availableParallelism } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const workspace = fileURLToPath(new URL("../", import.meta.url));
+
+// Leave half the machine for the app and other work, and cap the build so a
+// large workstation does not stall under a full-core rebuild.
+export function defaultBuildJobs(parallelism = availableParallelism()) {
+  return Math.max(1, Math.min(8, Math.floor(parallelism / 2)));
+}
 
 function track(child) {
   // Attach immediately: short-lived processes can exit before a caller awaits them.
@@ -24,7 +31,10 @@ export async function startDev({
   debounce = 300,
 } = {}) {
   const bundle = platform === "darwin";
-  const buildEnv = { ...env, CARGO_BUILD_JOBS: env.CARGO_BUILD_JOBS || "1" };
+  const buildEnv = {
+    ...env,
+    CARGO_BUILD_JOBS: env.CARGO_BUILD_JOBS || String(defaultBuildJobs()),
+  };
   const launch = (command, argv, options = {}) => track(spawnProcess(command, argv, {
     cwd: root, env: buildEnv, stdio: "inherit", ...options,
   }));

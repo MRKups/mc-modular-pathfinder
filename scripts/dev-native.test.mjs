@@ -5,7 +5,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
-import { parseDevArgs, startDev } from "./dev-native.mjs";
+import { defaultBuildJobs, parseDevArgs, startDev } from "./dev-native.mjs";
+
+test("build jobs leave headroom and cap at eight", () => {
+  assert.equal(defaultBuildJobs(1), 1);
+  assert.equal(defaultBuildJobs(2), 1);
+  assert.equal(defaultBuildJobs(4), 2);
+  assert.equal(defaultBuildJobs(8), 4);
+  assert.equal(defaultBuildJobs(12), 6);
+  assert.equal(defaultBuildJobs(16), 8);
+  assert.equal(defaultBuildJobs(32), 8);
+});
 
 test("forwards app options and rejects the retired runner flags", () => {
   assert.deepEqual(parseDevArgs([]), { args: [] });

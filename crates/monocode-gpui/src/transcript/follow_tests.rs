@@ -2195,6 +2195,177 @@ fn the_line_being_read_never_moves_back_down_as_work_folds(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn a_line_being_read_that_folds_into_the_work_line_keeps_the_reader_in_its_turn(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| cx.set_reduce_motion(true));
+    let turn = |i: usize| {
+        vec![
+            row("user", &format!("Question {i}")),
+            tool(i, true),
+            row(
+                "assistant",
+                &format!(
+                    "Answer {i}.\n\n{}",
+                    "A long paragraph of prose. ".repeat(40)
+                ),
+            ),
+        ]
+    };
+    // The live turn's commentary is the line being read, with plenty below it,
+    // so the chat is not following the tail.
+    let live = || {
+        let mut rows: Vec<Row> = (0..11).flat_map(turn).collect();
+        rows.extend([
+            row("user", "Question 11"),
+            tool(100, true),
+            row("assistant", "Checking."),
+            tool(101, true),
+            row("assistant", &"Checking one more thing.\n\n".repeat(40)),
+        ]);
+        rows
+    };
+    // The answer arrives: the turn's commentary and tool calls fold into its
+    // work line, and the row being read has no successor with its key.
+    let done = || {
+        let mut rows = live();
+        rows.push(row("assistant", &"Here is the answer.\n\n".repeat(40)));
+        rows
+    };
+    let window = chat_mode(cx, false);
+    window
+        .update(cx, |view, _, cx| {
+            view.visible = false;
+            view.patch(0, live(), cx);
+            view.visible = true;
+        })
+        .unwrap();
+    render(window, cx);
+    window
+        .update(cx, |view, _, _| {
+            let ix = view.rows.iter().position(|r| r.key.0 >= 37).unwrap();
+            view.list.scroll_to(ListOffset {
+                item_ix: ix,
+                offset_in_item: px(13.),
+            });
+        })
+        .unwrap();
+    render(window, cx);
+    let (read, before) = window
+        .update(cx, |view, _, _| {
+            assert!(!view.list.is_following_tail());
+            let ix = view.list.logical_scroll_top().item_ix;
+            (
+                view.rows[ix].key,
+                f32::from(view.list.bounds_for_item(ix).unwrap().top()),
+            )
+        })
+        .unwrap();
+    window
+        .update(cx, |view, _, cx| view.patch(0, done(), cx))
+        .unwrap();
+    render(window, cx);
+    window
+        .update(cx, |view, _, _| {
+            let ix = view.list.logical_scroll_top().item_ix;
+            let top = view.rows[ix].clone();
+            // The line stays when it survives; when it folded, its turn's
+            // work line takes the reader, rather than the answer or the
+            // previous turn's reply.
+            let expected = if view.rows.iter().any(|r| r.key == read) {
+                top.key == read
+            } else {
+                matches!(top.body, Body::WorkLine { .. }) && top.key.0 == 34
+            };
+            assert!(
+                expected,
+                "the reader moved from {read:?} to {:?} {}",
+                top.key,
+                view.source[top.key.0]
+                    .text
+                    .chars()
+                    .take(20)
+                    .collect::<String>()
+            );
+            let after = f32::from(view.list.bounds_for_item(ix).unwrap().top());
+            assert!(
+                (after - before).abs() <= 14.,
+                "the content moved from {before} to {after}"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn a_trimmed_final_message_keeps_the_reader_on_its_own_prose_not_its_actions(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| cx.set_reduce_motion(true));
+    let chat_with = |paragraphs: usize| {
+        vec![
+            row("user", "Question 0"),
+            row(
+                "assistant",
+                &"A long paragraph of prose.\n\n".repeat(paragraphs),
+            ),
+            row("user", "Question 1"),
+            row("assistant", &"Later answer.\n\n".repeat(40)),
+        ]
+    };
+    let window = chat_mode(cx, false);
+    window
+        .update(cx, |view, _, cx| {
+            view.visible = false;
+            view.patch(0, chat_with(40), cx);
+            view.visible = true;
+        })
+        .unwrap();
+    render(window, cx);
+    window
+        .update(cx, |view, _, _| {
+            let ix = view
+                .rows
+                .iter()
+                .rposition(|r| r.key.0 == 1 && matches!(r.body, Body::Markdown(_)))
+                .unwrap();
+            view.list.scroll_to(ListOffset {
+                item_ix: ix,
+                offset_in_item: px(0.),
+            });
+        })
+        .unwrap();
+    render(window, cx);
+    let read = window
+        .update(cx, |view, _, _| {
+            assert!(!view.list.is_following_tail());
+            view.rows[view.list.logical_scroll_top().item_ix].key
+        })
+        .unwrap();
+    // The patch drops the later prose of the message; its actions row keeps
+    // the same source index.
+    window
+        .update(cx, |view, _, cx| view.patch(0, chat_with(10), cx))
+        .unwrap();
+    render(window, cx);
+    window
+        .update(cx, |view, _, _| {
+            assert!(!view.rows.iter().any(|r| r.key == read));
+            assert!(
+                view.rows
+                    .iter()
+                    .any(|r| r.key.0 == 1 && matches!(r.body, Body::Actions { .. }))
+            );
+            let top = &view.rows[view.list.logical_scroll_top().item_ix];
+            assert!(
+                top.key.0 == 1 && matches!(top.body, Body::Markdown(_)),
+                "the reader moved from {read:?} to {:?}",
+                top.key
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
 fn long_user_messages_clamp_to_four_lines_until_shown_in_full(cx: &mut TestAppContext) {
     let lines = |n: usize| {
         (1..=n)

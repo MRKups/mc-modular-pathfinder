@@ -123,7 +123,6 @@ type State struct {
 	Build         []buildSystem
 	BuildTools    []toolInfo
 	BuildWarnings []string
-	BuildIndex    int
 	BuildRoot     string
 	BuildScanned  string
 	BuildMS       int64
@@ -200,25 +199,6 @@ func button(label, handler string, disabled bool) map[string]any {
 
 func toggle(label string, value bool, handler string) map[string]any {
 	return map[string]any{"kind": "toggle", "label": label, "value": value, "handler": handler}
-}
-
-func selectNode(label string, options []string, selected int, handler string) map[string]any {
-	if len(options) == 0 {
-		options = []string{"—"}
-	}
-	if selected < 0 {
-		selected = 0
-	}
-	if selected >= len(options) {
-		selected = len(options) - 1
-	}
-	return map[string]any{
-		"kind":     "select",
-		"label":    label,
-		"options":  options,
-		"selected": selected,
-		"handler":  handler,
-	}
 }
 
 func run(name string, args ...string) (string, error) {
@@ -1616,9 +1596,6 @@ func refreshBuild(state *State) {
 	state.Build = systems
 	state.BuildWarnings = warnings
 	state.BuildTools = buildTools(systems)
-	if state.BuildIndex >= len(systems) {
-		state.BuildIndex = 0
-	}
 	state.BuildRoot = state.Project
 	state.BuildScanned = time.Now().Format("15:04:05")
 	state.BuildMS = time.Since(started).Milliseconds()
@@ -1747,15 +1724,9 @@ func buildTab(state *State) map[string]any {
 		}
 		return map[string]any{"kind": "column", "gap": 12, "children": children}
 	}
-	index := state.BuildIndex
-	if index < 0 || index >= len(state.Build) {
-		index = 0
-	}
-	selected := state.Build[index]
-	options := make([]string, 0, len(state.Build))
+	selected := state.Build[0]
 	projectRows := make([][]string, 0, len(state.Build))
 	for _, system := range state.Build {
-		options = append(options, fmt.Sprintf("%s · %s · %s", system.Directory, system.System, system.Manager))
 		projectRows = append(projectRows, []string{
 			system.Directory,
 			system.System,
@@ -1794,11 +1765,10 @@ func buildTab(state *State) map[string]any {
 		targetContent = append(targetContent, text("No named targets.", "body", "muted"))
 	}
 	children := []any{
-		selectNode("Project", options, index, "build"),
 		map[string]any{"kind": "row", "gap": 8, "children": []any{
 			button("Refresh", "refresh_build", false),
 		}},
-		text(fmt.Sprintf("%d project(s) · scanned %s · %d ms", len(state.Build), state.BuildScanned, state.BuildMS), "caption", "muted"),
+		text(fmt.Sprintf("%d project(s) · showing %s · scanned %s · %d ms", len(state.Build), selected.Directory, state.BuildScanned, state.BuildMS), "caption", "muted"),
 		section("Projects", []any{
 			table([]string{"Directory", "System", "Manager", "Manifest"}, projectRows),
 		}),
@@ -1840,7 +1810,6 @@ func processesTab(s *snapshot, state *State) map[string]any {
 			compact(item.Command, 80),
 		})
 	}
-	sortOptions := []string{"CPU", "Memory", "Name", "PID"}
 	return map[string]any{
 		"kind": "column",
 		"gap":  12,
@@ -1852,7 +1821,6 @@ func processesTab(s *snapshot, state *State) map[string]any {
 				"placeholder": "name, argument, or PID",
 				"handler":     "filter",
 			},
-			selectNode("Sort", sortOptions, state.Sort, "sort"),
 			map[string]any{"kind": "row", "gap": 8, "children": []any{
 				button("Refresh", "refresh", false),
 				toggle("Live (2 s)", state.Live, "live"),
@@ -1995,7 +1963,7 @@ func tree(state *State) map[string]any {
 		"labels":    []string{"Build", "Processes", "Network", "System"},
 		"selected":  state.Tab,
 		"handler":   "tab",
-		"nav_width": 210,
+		"nav_width": 180,
 		"children":  []any{page},
 	}
 }
@@ -2013,19 +1981,11 @@ func (s *State) handleEvent(handler string, value any) {
 				refreshBuild(s)
 			}
 		}
-	case "build":
-		if number, ok := value.(float64); ok && len(s.Build) > 0 {
-			s.BuildIndex = int(math.Max(0, math.Min(float64(len(s.Build)-1), number)))
-		}
 	case "refresh_build":
 		refreshBuild(s)
 	case "live":
 		if enabled, ok := value.(bool); ok {
 			s.Live = enabled
-		}
-	case "sort":
-		if number, ok := value.(float64); ok {
-			s.Sort = int(math.Max(0, math.Min(3, number)))
 		}
 	case "filter":
 		if value, ok := value.(string); ok {

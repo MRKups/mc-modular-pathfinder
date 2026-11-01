@@ -836,25 +836,43 @@ impl VisualView {
                     .first()
                     .map(|child| self.node(child, format!("{key}/0"), cx))
                     .unwrap_or_else(|| div().into_any_element());
+                // Center the reading column. The matching spacer on the right
+                // makes the column itself centered while the TOC sits beside it.
+                let gap = 24.;
+                let group_width = (rail_width * 2.) + (gap * 2.) + PAGE_CONTENT_MAX_WIDTH;
                 div()
                     .w_full()
                     .min_w_0()
                     .flex()
-                    .items_start()
-                    .gap(px(32.))
-                    .child(rail)
+                    .justify_center()
                     .child(
                         div()
-                            .id(SharedString::from(format!("visual-page-panel-{key}")))
+                            .id(SharedString::from(format!("visual-page-layout-{key}")))
                             .debug_selector({
                                 let key = key.clone();
-                                move || format!("visual-page-panel-{key}")
+                                move || format!("visual-page-layout-{key}")
                             })
-                            .role(Role::TabPanel)
-                            .flex_1()
+                            .w_full()
                             .min_w_0()
-                            .max_w(px(PAGE_CONTENT_MAX_WIDTH))
-                            .child(content),
+                            .max_w(px(group_width))
+                            .flex()
+                            .items_start()
+                            .gap(px(gap))
+                            .child(rail)
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("visual-page-panel-{key}")))
+                                    .debug_selector({
+                                        let key = key.clone();
+                                        move || format!("visual-page-panel-{key}")
+                                    })
+                                    .role(Role::TabPanel)
+                                    .flex_1()
+                                    .min_w_0()
+                                    .max_w(px(PAGE_CONTENT_MAX_WIDTH))
+                                    .child(content),
+                            )
+                            .child(div().w(px(rail_width)).flex_none()),
                     )
                     .into_any_element()
             }

@@ -99,7 +99,7 @@ pub struct Slice {
 }
 
 fn default_page_nav_width() -> f32 {
-    210.
+    180.
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

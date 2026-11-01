@@ -78,8 +78,8 @@ Authoring station features:
 - Live API/limits/features/provider tables from `host.describe` and
   `llm.providers`.
 - Four-step scaffold wizard: identity → destination → review → created.
-- Scaffolds Node, Python, Rust, or Go plugins with manifest, source, README, and
-  build files. Review shows every path before writing.
+- Scaffolds a Node.js plugin with manifest, source, README, and package file.
+  Review shows every path before writing.
 - Loads and saves project files in the code editor.
 - Single-column Generate page: provider, system prompt, prompt, and response.
   Sends one async `llm.complete` request and can copy the response into the

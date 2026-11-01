@@ -74,14 +74,14 @@ See [PROTOCOL.md](PROTOCOL.md) for the complete contract, and
 [debugging-station/main.go](../plugin-sources/debugging-station/main.go) or
 [authoring-station/index.js](../plugin-sources/authoring-station/index.js) for
 working implementations. The authoring plugin also bundles a doc browser and
-scaffold templates for all four languages.
+Node.js, Python, Rust, and Go scaffold templates.
 
 ## Caveats
 
 - Plugins are trusted programs, not a security sandbox. They run with your
   permissions.
 - Every plugin surface is a sidebar page. Use `page_tabs` for a left
-  table-of-contents rail and a single 800 px content column. There are no plugin
-  title tabs.
+  table-of-contents rail and a centered 800 px content column. There are no
+  plugin title tabs.
 - A crashed plugin stays offline until the app restarts; its surface shows an
   offline/error state.

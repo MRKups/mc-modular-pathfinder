@@ -10,9 +10,9 @@ The scaffold wizard has four steps: identity, destination, review, and created.
 Only the review step writes anything. It produces a complete starting package:
 
 - `plugin.json` with a valid id, command, and one surface.
-- A runnable program in Node.js, Python, Rust, or Go.
+- A runnable Node.js program.
 - A `README.md` with build and restart instructions.
-- Rust and Go scaffolds include their build files.
+- A `package.json` for the module layout.
 
 The target directory is relative to the active project. The default is
 `plugin-sources/<name>`, which is the layout this repository uses. Do not

@@ -28,7 +28,6 @@ const state = {
   root: "",
   tab: 0,
   docs: [],
-  docIndex: 0,
   describe: null,
   describeError: "",
   providers: [],
@@ -138,17 +137,6 @@ function inputNode(label, value, placeholder, handler) {
   return { kind: "input", label, value: clip(value, 4096), placeholder, handler };
 }
 
-function selectNode(label, options, selected, handler) {
-  const safe = options.length ? options.slice(0, 24) : ["—"];
-  return {
-    kind: "select",
-    label,
-    options: safe,
-    selected: Math.max(0, Math.min(selected, safe.length - 1)),
-    handler,
-  };
-}
-
 function codeEditor(label, value, language, height, handler, readOnly = false) {
   return {
     kind: "code_editor",
@@ -167,7 +155,7 @@ function pageTabs(labels, selected, handler, children) {
     labels,
     selected,
     handler,
-    nav_width: 210,
+    nav_width: 180,
     children,
   };
 }
@@ -194,7 +182,6 @@ function loadDocs() {
         content: content.slice(0, 40000),
       };
     });
-    state.docIndex = Math.max(0, Math.min(state.docIndex, state.docs.length - 1));
   } catch (error) {
     state.docs = [];
     state.describeError = `Cannot read bundled docs: ${error.message}`;
@@ -347,11 +334,6 @@ function markdownNodes(markdown) {
 
 function provider() {
   return state.providers[state.providerIndex] || null;
-}
-
-function providerLabels() {
-  if (!state.providers.length) return ["No provider installed"];
-  return state.providers.map((item) => `${item.label} · ${item.account || "default"}`);
 }
 
 function chooseModel(index) {
@@ -861,9 +843,6 @@ function handleEvent(handler, value) {
       state.tab = Math.max(0, Math.min(TABS.length - 1, Number(value) || 0));
       state.status = "";
       break;
-    case "doc":
-      state.docIndex = Math.max(0, Math.min(state.docs.length - 1, Number(value) || 0));
-      break;
     case "scaffold_name":
       state.scaffold.name = clip(value, 80);
       republish = false;
@@ -879,12 +858,6 @@ function handleEvent(handler, value) {
     case "scaffold_target":
       state.scaffold.target = clip(value, 512);
       republish = false;
-      break;
-    case "scaffold_language":
-      state.scaffold.language = Math.max(
-        0,
-        Math.min(LANGUAGES.length - 1, Number(value) || 0),
-      );
       break;
     case "scaffold_next":
       if (state.scaffold.step === 0) {
@@ -928,13 +901,6 @@ function handleEvent(handler, value) {
         mainFile: "",
       };
       state.status = "";
-      break;
-    case "provider":
-      state.providerIndex = Math.max(
-        0,
-        Math.min(state.providers.length - 1, Number(value) || 0),
-      );
-      chooseModel(state.providerIndex);
       break;
     case "model":
       state.model = clip(value, 200);
@@ -1006,19 +972,10 @@ function guideTab() {
   if (!state.docs.length) {
     return text("No docs available.", "body", "warning");
   }
-  const doc = state.docs[state.docIndex] || state.docs[0];
   return {
     kind: "column",
     gap: 12,
-    children: [
-      selectNode(
-        "Document",
-        state.docs.map((item) => item.title),
-        state.docIndex,
-        "doc",
-      ),
-      ...markdownNodes(doc.content),
-    ],
+    children: state.docs.flatMap((doc) => markdownNodes(doc.content)),
   };
 }
 
@@ -1108,7 +1065,6 @@ function scaffoldStep() {
           "What the plugin does",
           "scaffold_description",
         ),
-        selectNode("Language", LANGUAGES, state.scaffold.language, "scaffold_language"),
       ],
     };
   }
@@ -1178,18 +1134,20 @@ function scaffoldTab() {
 }
 
 function generateTab() {
+  const active = provider();
   const providerNotes = [];
   if (state.providersError) {
     providerNotes.push(text(state.providersError, "small", "warning"));
-  } else if (!state.providers.length) {
-    providerNotes.push(text("No provider installed.", "small", "muted"));
+  } else if (active) {
+    providerNotes.push(text(active.label, "small", "muted"));
+  } else {
+    providerNotes.push(text("Host default", "small", "muted"));
   }
   return {
     kind: "column",
     gap: 18,
     children: [
       section("Provider", [
-        selectNode("Provider", providerLabels(), state.providerIndex, "provider"),
         inputNode("Model", state.model, "provider default", "model"),
         ...providerNotes,
       ]),

@@ -119,7 +119,8 @@ Limits:
 - `CodeEditor` is a native multiline syntax-highlighting node built on the
   existing file editor.
 - `PageTabs` is a native table-of-contents rail with one content page. The
-  content column is capped at 800 px and stays a single vertical flow.
+  content column is capped at 800 px, centered, and stays a single vertical
+  flow.
 
 ## Host API
 

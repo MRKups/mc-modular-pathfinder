@@ -1246,7 +1246,7 @@ fn tree(state: &State) -> Value {
         "labels": ["Overview", "Languages", "Dependencies", "Files", "TODO"],
         "selected": state.tab,
         "handler": "tab",
-        "nav_width": 210,
+        "nav_width": 180,
         "children": [{
             "kind": "column",
             "gap": 12,

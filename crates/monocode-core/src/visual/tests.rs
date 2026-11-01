@@ -346,7 +346,7 @@ fn page_tabs_default_the_nav_width_and_require_one_content_child() {
     else {
         panic!("Expected page tabs")
     };
-    assert_eq!(*nav_width, 210.);
+    assert_eq!(*nav_width, 180.);
     assert_eq!(*selected, 1);
 
     let bad: Node = serde_json::from_value(json!({

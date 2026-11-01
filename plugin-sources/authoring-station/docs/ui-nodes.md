@@ -10,15 +10,15 @@ HTML, CSS, or JavaScript. The renderer is native GPUI.
 {"kind":"row","gap":8,"children":[]}
 {"kind":"grid","columns":2,"gap":12,"children":[]}
 {"kind":"card","gap":10,"children":[]}
-{"kind":"page_tabs","labels":["Guide","API"],"selected":0,"handler":"page","nav_width":210,
+{"kind":"page_tabs","labels":["Guide","API"],"selected":0,"handler":"page","nav_width":180,
  "children":[{"kind":"text","text":"Page body","size":"body","color":"ink"}]}
 ```
 
 `page_tabs` is a table-of-contents rail plus one content child. Set `selected` to
 the active label and send a new tree when the user clicks another one.
-`nav_width` defaults to `210` and is clamped to `140–360`. The content column is
-capped at `800` logical pixels. Keep each page in one vertical flow; use rows
-only for compact control groups.
+`nav_width` defaults to `180` and is clamped to `140–360`. The content column is
+capped at `800` logical pixels and centered in the page. Keep each page in one
+vertical flow; use rows only for compact control groups.
 
 ## Content
 

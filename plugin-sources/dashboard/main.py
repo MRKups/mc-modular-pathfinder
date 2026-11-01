@@ -133,19 +133,6 @@ def toggle(label: str, value: bool, handler: str) -> Dict[str, Any]:
     return {"kind": "toggle", "label": label, "value": value, "handler": handler}
 
 
-def select(label: str, options: List[str], selected: int, handler: str) -> Dict[str, Any]:
-    cleaned = [str(option).replace("\x00", "")[:240] for option in options[:24]]
-    if not cleaned:
-        cleaned = ["—"]
-    return {
-        "kind": "select",
-        "label": label,
-        "options": cleaned,
-        "selected": max(0, min(selected, len(cleaned) - 1)),
-        "handler": handler,
-    }
-
-
 def input_node(label: str, value: str, placeholder: str, handler: str) -> Dict[str, Any]:
     return {
         "kind": "input",
@@ -1190,22 +1177,6 @@ class Dashboard:
         metric_name = (
             "Rows" if aggregation == 2 or metric is None else dataset.columns[metric]
         )
-        x_options, self.x_base = option_window(
-            [column[:80] for column in dataset.columns], x_index
-        )
-        metric_positions = dataset.numeric if dataset.numeric else []
-        metric_labels = (
-            [dataset.columns[index][:80] for index in metric_positions]
-            if metric_positions
-            else ["Rows"]
-        )
-        metric_selected = (
-            metric_positions.index(metric)
-            if metric is not None and metric in metric_positions
-            else 0
-        )
-        metric_options, self.metric_base = option_window(metric_labels, metric_selected)
-        metric_selected -= self.metric_base
         top_values = sorted(
             (value for value in (series[0].get("values", []) if series else []) if value > 0),
             reverse=True,
@@ -1214,21 +1185,10 @@ class Dashboard:
             (top_values[0] / sum(top_values) * 100) if top_values and sum(top_values) else 0
         )
         histogram = histogram_canvas(dataset, metric) if metric is not None else None
-        controls = {
-            "kind": "column",
-            "gap": 8,
-            "children": [
-                select("X axis", x_options, x_index, "x"),
-                select("Measure", metric_options, metric_selected, "metric"),
-                select("Aggregation", list(AGGREGATIONS), aggregation, "aggregation"),
-                select("Chart type", list(CHART_TYPES), self.chart_type, "chart"),
-            ],
-        }
         return {
             "kind": "column",
             "gap": 12,
             "children": [
-                card("View", [controls]),
                 card(
                     f"{CHART_TYPES[self.chart_type]} of {aggregation == 2 and 'rows' or metric_name} by {dataset.columns[x_index]}",
                     [
@@ -1395,12 +1355,7 @@ class Dashboard:
         }
 
     def header(self) -> List[Dict[str, Any]]:
-        values = [dataset.name for dataset in self.all_datasets[:24]]
-        selected = self.dataset_index()
-        dataset_select = select("Dataset", values or ["Sample · Release activity"], selected, "dataset")
-        dataset_select["selected"] = max(0, min(selected, len(dataset_select["options"]) - 1))
         return [
-            dataset_select,
             {
                 "kind": "row",
                 "gap": 8,
@@ -1429,7 +1384,7 @@ class Dashboard:
             "labels": ["Overview", "Explore", "Data"],
             "selected": self.tab,
             "handler": "tab",
-            "nav_width": 210,
+            "nav_width": 180,
             "children": [{"kind": "column", "gap": 12, "children": content}],
         }
 

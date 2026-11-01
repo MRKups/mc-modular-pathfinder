@@ -484,10 +484,17 @@ fn remote_page_tabs_render_a_vertical_rail_and_forward_selection(cx: &mut TestAp
     let panel = visual
         .debug_bounds("visual-page-panel-root/0")
         .expect("the page panel should render");
+    let layout = visual
+        .debug_bounds("visual-page-layout-root/0")
+        .expect("the page layout should render");
     assert!(panel.origin.x > first.origin.x);
     assert!(
         panel.size.width.as_f32() <= 800.,
         "the content column should stay at or below 800 px"
+    );
+    assert!(
+        (panel.center().x - layout.center().x).as_f32().abs() < 1.,
+        "the content column should be centered in the page layout"
     );
     let bounds = visual
         .debug_bounds("visual-page-tab-root/0-1")

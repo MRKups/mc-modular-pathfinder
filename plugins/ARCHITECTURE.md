@@ -188,7 +188,8 @@ When the user clicks a plugin row:
 5. The shell renders the plugin page in the workspace body and keeps the
    project tools panel available on the right.
 6. `PageTabs` provides a native table-of-contents rail with one content page.
-   The content column is capped at 800 px and stays a single vertical flow.
+   The content column is capped at 800 px, centered, and stays a single vertical
+   flow.
 
 The host caches the last tree even while the surface is closed, so a plugin can
 continue work in the background and have a current tree ready when reopened.

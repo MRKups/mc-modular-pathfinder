@@ -7,56 +7,54 @@ that each have a real job.
 
 | Plugin | Language | Purpose | Showcases |
 |---|---|---|---|
-| **Dashboard** | Python | Data visualization workbench for CSV/TSV/JSON in the workspace | Charts, gauges, donuts, heatmaps, progress, stats, tables, dynamic `ui.set`, live file reload |
-| **Workspace Analysis** | Rust | Dynamic analysis and health of any reasonable codebase | Filesystem scanning, manifests, dependencies, TODOs, toolchain checks |
-| **Debugging Station** | Go | Build-system detection and live system inspection | Manifest/script/task detection, tool checks, processes, memory, disks, sockets, live refresh |
+| **Notebook** | Python | Python notebook for data work in the active workspace | Code cells, persistent Python kernel, captured output, variables, data files |
+| **Workspace Analysis** | Rust | Review the current repository | Language breakdown, dependency resolution, dense file tables, TODO markers |
+| **Debugger** | Go | Inspect processes and ports like an IDE debugger | Target selection, process inspector, ports, build configurations |
 | **Plugin Authoring** | Node.js | Design, scaffold, document, and generate plugins | Vertical docs/API/scaffold/generate/editor pages, step wizard, source editor, LLM generation |
 
 ## Language decision
 
-- **Python** — Dashboard. CSV/JSON parsing and data shaping.
+- **Python** — Notebook. Persistent Python kernel, code cells, and data files.
 - **Rust** — Workspace Analysis. Fast, bounded repository walking.
-- **Go** — Debugging Station. Process/network/system inspection without deps.
+- **Go** — Debugger. Process and port inspection without dependencies.
 - **Node.js** — Plugin Authoring. Templates, docs, child-process-free file IO,
   and LLM JSON calls.
 
 ## Implementation status
 
-### Dashboard
+### Notebook
 
-- No host API beyond `workspace.info` and `storage.*`.
-- Discovers workspace CSV/TSV/JSON files, with three labeled sample datasets.
-- Shapes rows by x column, measure, aggregation, chart type, top-N, and compare
-  toggle.
-- Shows stats, chart, donut, gauge, progress, heatmap, and tables together.
-- Reloads the active file when Live is on and its mtime changes.
-- Persists the last view in plugin storage.
+- Python kernel runs in a child `python3` process with a persistent namespace.
+- Vertical pages: **Notebook**, **Data**, **Variables**, **Kernel**.
+- Code cells show execution count, source, and captured text output.
+- Run one cell, run all cells, add/delete cells, and clear outputs.
+- Data page scans CSV/TSV/JSON files and inserts a ready-to-run loader cell.
+- Variables page lists the current kernel namespace.
+- Kernel page shows Python version, executable, working directory, and status.
 
 ### Workspace Analysis
 
 - Uses `workspace.info` and direct filesystem/subprocess access.
-- Dynamically detects languages, manifests, dependency counts, lockfiles,
-  tests, CI, docs, TODO markers, large files, git state, and toolchains.
-- Reports evidence-based checks rather than an arbitrary health score.
+- Reviews the current repository: languages, manifests, dependencies, files,
+  TODO markers, checks, git state, and toolchains.
+- Language breakdown uses a language icon beside each name.
+- Resolves dependency counts by running read-only toolchain commands
+  (for example `npm ls`, `cargo metadata`, `go list -m all`), with declared
+  counts as fallback.
+- Dense, width-aware tables with no horizontal scrolling.
+- One Rescan button and the time of the last scan.
 - Bounded scan: 50k files, 64 MiB content, 512 KiB per file.
-- Rescan and optional five-second live scanning.
 
-### Debugging Station
+### Debugger
 
-- Read-only. Never kills processes, changes sockets, or executes builds.
-- Left table-of-contents rail: **Build**, **Processes**, **Network**, **System**.
-- Detects Node (npm, pnpm, yarn, bun), Cargo, Go modules, Python
-  (pip, uv, poetry), Make, Task, Just, Maven, Gradle, CMake, Composer,
-  Bundler, Deno, .NET, and Docker manifests up to four levels down.
-- Reads package scripts, Make targets, Task tasks, Just recipes, Cargo bins,
-  Python scripts, Composer and Deno tasks.
-- Infers install/build/test/lint/format commands and checks tool availability
-  and versions on `PATH`.
-- Samples `ps`, load, memory, `df`, and `lsof`/`netstat`.
-- Gracefully degrades when a command or permission is unavailable.
-- Processes can be filtered and sorted by CPU, memory, name, or PID.
-- Network tab lists listeners, established connections, and socket states.
-- No charts, donuts, or gauges; the station is tables and live evidence.
+- Read-only. Never attaches, kills processes, or changes sockets.
+- Vertical pages: **Debug**, **Processes**, **Ports**, **Build**.
+- Debug page lists processes running from the active project and inspects the
+  selected target: parent, state, CPU, memory, command, arguments, and ports.
+- Processes page is a filterable process table.
+- Ports page lists socket states, listeners, and connections.
+- Build page detects build systems, scripts/targets, and toolchains.
+- No activity dashboard, charts, gauges, memory/disk overview, or live ticking.
 
 ### Plugin Authoring
 
@@ -87,8 +85,8 @@ Authoring station features:
 
 ## Resolved decisions
 
-- Dashboard supports a real workspace file and includes clearly labeled sample
-  datasets as a fallback.
+- Notebook uses a real child Python kernel and workspace data files. Notebook
+  state is in memory; the document itself is not persisted yet.
 - Authoring v1 is docs + scaffold + LLM + code editing. Live preview/reload is
   deferred; restart after manifest/protocol changes.
 - No session transcript access. `llm.complete` takes a direct prompt and

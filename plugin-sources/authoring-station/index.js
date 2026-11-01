@@ -116,9 +116,9 @@ function withStatus(body) {
   return { kind: "column", gap: 12, children: [status, body] };
 }
 
-function table(columns, rows) {
+function table(columns, rows, weights = []) {
   const safeColumns = columns.map((column) => clean(column).slice(0, 256)).slice(0, 24);
-  return {
+  const node = {
     kind: "table",
     columns: safeColumns,
     rows: rows
@@ -127,6 +127,8 @@ function table(columns, rows) {
         safeColumns.map((_, index) => clip(row[index] ?? "", 2048)),
       ),
   };
+  if (weights.length === safeColumns.length) node.weights = weights;
+  return node;
 }
 
 function button(label, handler, disabled = false) {

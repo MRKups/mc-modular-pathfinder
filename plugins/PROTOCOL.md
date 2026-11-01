@@ -240,7 +240,7 @@ Common nodes:
 {"kind":"card","gap":8,"children":[]}
 {"kind":"text","text":"Hello","size":"body","color":"ink"}
 {"kind":"stat","label":"Clicks","value":"3","color":"accent"}
-{"kind":"table","columns":["A","B"],"rows":[["1","2"]]}
+{"kind":"table","columns":["A","B"],"rows":[["1","2"]],"weights":[1.0,2.0]}
 {"kind":"button","label":"Click","handler":"click","disabled":false}
 {"kind":"toggle","label":"Enabled","value":true,"handler":"toggle"}
 {"kind":"input","label":"Name","value":"","placeholder":"Type","handler":"name"}
@@ -258,6 +258,10 @@ republishes when the selection changes. `nav_width` is optional (default `180`,
 range `140–360`). The content column is capped at `800` logical pixels and
 centered in the page, with the rail beside it. Keep page content in one vertical
 flow; use rows only for compact control groups.
+
+Tables fit their container and truncate long cells instead of scrolling
+horizontally. `weights` is optional and sets relative column widths; it must
+have one positive value per column.
 
 Also available: `chart`, `gauge`, `donut`, `heatmap`, `progress`, `canvas`, and
 `scene`. Text sizes are `caption`, `small`, `body`, `subtitle`, `title`, `hero`.

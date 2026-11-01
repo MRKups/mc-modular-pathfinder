@@ -68,6 +68,8 @@ struct Manifest {
     name: String,
     version: String,
     deps: Option<usize>,
+    resolved: Option<usize>,
+    resolution: String,
     detail: String,
 }
 
@@ -130,9 +132,7 @@ struct State {
     root: Option<PathBuf>,
     analysis: Option<Analysis>,
     tab: usize,
-    live: bool,
     status: String,
-    last_scan: Option<Instant>,
 }
 
 impl State {
@@ -141,9 +141,7 @@ impl State {
             root: None,
             analysis: None,
             tab: 0,
-            live: false,
             status: "Waiting for the active workspace…".into(),
-            last_scan: None,
         }
     }
 
@@ -164,21 +162,12 @@ impl State {
             scan.scanned_at
         );
         self.analysis = Some(scan);
-        self.last_scan = Some(Instant::now());
     }
 
     fn handle_event(&mut self, handler: &str, value: &Value) {
         match handler {
             "tab" => {
                 self.tab = value.as_u64().unwrap_or_default().min(4) as usize;
-            }
-            "live" => {
-                self.live = value.as_bool().unwrap_or(false);
-                self.status = if self.live {
-                    "Live scanning is on (every 5 s)".into()
-                } else {
-                    "Live scanning is off".into()
-                };
             }
             "refresh" => self.rescan(),
             _ => {}
@@ -537,6 +526,7 @@ fn analyze(root: &Path) -> Analysis {
     if warnings.len() > 12 {
         warnings.truncate(12);
     }
+    let manifests = resolve_dependency_counts(root, manifests);
 
     Analysis {
         files,
@@ -603,6 +593,8 @@ fn read_manifest(root: &Path, path: &str) -> Manifest {
         name: String::new(),
         version: String::new(),
         deps: None,
+        resolved: None,
+        resolution: "manifest".into(),
         detail: String::new(),
     };
     match ecosystem.as_str() {
@@ -774,6 +766,191 @@ fn count_sections(content: &str, sections: &[&str]) -> usize {
     count
 }
 
+fn language_icon(name: &str) -> &'static str {
+    match name {
+        "Rust" => "🦀",
+        "Python" => "🐍",
+        "Go" => "🐹",
+        "JavaScript" => "🟨",
+        "TypeScript" => "🟦",
+        "Java" => "☕",
+        "Kotlin" => "🟪",
+        "Swift" => "🐦",
+        "C" => "🔧",
+        "C++" => "🔩",
+        "C#" => "🎯",
+        "Ruby" => "💎",
+        "PHP" => "🐘",
+        "Lua" => "🌙",
+        "Elixir" => "💧",
+        "Zig" => "⚡",
+        "Shell" => "🐚",
+        "SQL" => "🗄",
+        "HTML" => "🧱",
+        "CSS" => "🎨",
+        "Markdown" => "📝",
+        "JSON" => "🧾",
+        "YAML" => "⚙",
+        "TOML" => "⚙",
+        "Docker" => "🐳",
+        _ => "📄",
+    }
+}
+
+fn language_label(name: &str) -> String {
+    format!("{} {}", language_icon(name), name)
+}
+
+fn resolve_dependency_counts(root: &Path, mut manifests: Vec<Manifest>) -> Vec<Manifest> {
+    let mut resolved = 0usize;
+    let mut ecosystems = BTreeSet::new();
+    let mut order = (0..manifests.len()).collect::<Vec<_>>();
+    order.sort_by_key(|index| {
+        (
+            Path::new(&manifests[*index].path).components().count(),
+            manifests[*index].path.clone(),
+        )
+    });
+    for index in order {
+        if resolved >= 4 {
+            break;
+        }
+        let manifest = &mut manifests[index];
+        if manifest.resolved.is_some() || ecosystems.contains(&manifest.ecosystem) {
+            continue;
+        }
+        let directory = root.join(
+            Path::new(&manifest.path)
+                .parent()
+                .unwrap_or_else(|| Path::new("")),
+        );
+        if !directory.is_dir() {
+            continue;
+        }
+        if let Some((count, source)) = resolve_manifest(manifest, &directory) {
+            manifest.resolved = Some(count);
+            manifest.resolution = source;
+            ecosystems.insert(manifest.ecosystem.clone());
+            resolved += 1;
+        }
+    }
+    manifests
+}
+
+fn resolve_manifest(manifest: &Manifest, directory: &Path) -> Option<(usize, String)> {
+    match manifest.ecosystem.as_str() {
+        "Node" => {
+            if !directory.join("package-lock.json").is_file()
+                && !directory.join("npm-shrinkwrap.json").is_file()
+            {
+                return None;
+            }
+            let output = command_output(directory, "npm", &["ls", "--all", "--json", "--silent"])?;
+            let value: Value = serde_json::from_slice(&output.stdout).ok()?;
+            Some((npm_dependency_count(&value), "npm ls".into()))
+        }
+        "Rust" => {
+            let output = command_output(
+                directory,
+                "cargo",
+                &["metadata", "--format-version", "1", "--locked"],
+            )?;
+            let value: Value = serde_json::from_slice(&output.stdout).ok()?;
+            let count = value["resolve"]["nodes"].as_array().map_or(0, Vec::len);
+            Some((count, "cargo metadata (workspace)".into()))
+        }
+        "Go" => {
+            let output = command_output(directory, "go", &["list", "-m", "all"])?;
+            let text = String::from_utf8_lossy(&output.stdout);
+            let count = text
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .skip(1)
+                .count();
+            Some((count, "go list -m all".into()))
+        }
+        "Python" if directory.join("poetry.lock").is_file() => {
+            let output = command_output(directory, "poetry", &["show", "--format=json"])?;
+            let value: Value = serde_json::from_slice(&output.stdout).ok()?;
+            let count = value.as_array().map_or(0, Vec::len);
+            Some((count, "poetry show".into()))
+        }
+        "PHP" if directory.join("composer.lock").is_file() => {
+            let output = command_output(directory, "composer", &["show", "--format=json"])?;
+            let value: Value = serde_json::from_slice(&output.stdout).ok()?;
+            let count = value["installed"].as_array().map_or(0, Vec::len);
+            Some((count, "composer show".into()))
+        }
+        "Ruby" if directory.join("Gemfile.lock").is_file() => {
+            let output = command_output(directory, "bundle", &["list"])?;
+            let text = String::from_utf8_lossy(&output.stdout);
+            let count = text
+                .lines()
+                .filter(|line| line.trim_start().starts_with("* "))
+                .count();
+            Some((count, "bundle list".into()))
+        }
+        "Deno" => {
+            let output = command_output(directory, "deno", &["info", "--json"])?;
+            let value: Value = serde_json::from_slice(&output.stdout).ok()?;
+            let count = value["modules"].as_array().map_or(0, Vec::len);
+            Some((count, "deno info".into()))
+        }
+        _ => None,
+    }
+}
+
+fn npm_dependency_count(value: &Value) -> usize {
+    fn walk(value: &Value, seen: &mut BTreeSet<String>) {
+        if let Some(dependencies) = value["dependencies"].as_object() {
+            for (name, dependency) in dependencies {
+                seen.insert(name.clone());
+                walk(dependency, seen);
+            }
+        }
+    }
+    let mut seen = BTreeSet::new();
+    walk(value, &mut seen);
+    seen.len()
+}
+
+fn command_output(directory: &Path, program: &str, args: &[&str]) -> Option<std::process::Output> {
+    let mut child = Command::new(program)
+        .args(args)
+        .current_dir(directory)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        let _ = sender.send(bytes);
+    });
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().ok()? {
+            let stdout = receiver
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap_or_default();
+            return Some(std::process::Output {
+                status,
+                stdout,
+                stderr: Vec::new(),
+            });
+        }
+        if started.elapsed() > Duration::from_secs(3) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        thread::sleep(Duration::from_millis(40));
+    }
+}
+
 fn toolchains(manifests: &[Manifest]) -> Vec<Tool> {
     let ecosystems: BTreeSet<&str> = manifests
         .iter()
@@ -888,15 +1065,19 @@ fn card(title: &str, children: Vec<Value>) -> Value {
     json!({"kind": "card", "gap": 10, "children": all})
 }
 
-fn table(columns: &[&str], rows: Vec<Vec<String>>) -> Value {
-    json!({
+fn table_weighted(columns: &[&str], rows: Vec<Vec<String>>, weights: &[f32]) -> Value {
+    let mut node = json!({
         "kind": "table",
         "columns": columns,
         "rows": rows.into_iter()
             .take(250)
             .map(|row| row.into_iter().take(24).collect::<Vec<_>>())
             .collect::<Vec<_>>()
-    })
+    });
+    if weights.len() == columns.len() {
+        node["weights"] = json!(weights);
+    }
+    node
 }
 
 fn percent(part: usize, total: usize) -> f64 {
@@ -943,14 +1124,18 @@ fn overview(analysis: &Analysis) -> Value {
         vec!["Manifests".into(), analysis.manifests.len().to_string()],
         vec!["Size".into(), fmt_size(analysis.total_bytes)],
     ];
-    let language_rows = analysis
+    let mut languages = analysis
         .languages
         .iter()
         .filter(|(_, stats)| stats.lines > 0)
+        .collect::<Vec<_>>();
+    languages.sort_by_key(|(_, stats)| std::cmp::Reverse(stats.lines));
+    let language_rows = languages
+        .into_iter()
         .take(8)
         .map(|(name, stats)| {
             vec![
-                name.clone(),
+                language_label(name),
                 stats.files.to_string(),
                 stats.lines.to_string(),
             ]
@@ -991,7 +1176,11 @@ fn overview(analysis: &Analysis) -> Value {
         "kind": "column",
         "gap": 12,
         "children": [
-            card("Summary", vec![table(&["Metric", "Value"], summary_rows)]),
+            card("Summary", vec![table_weighted(
+                &["Metric", "Value"],
+                summary_rows,
+                &[1.0, 1.0]
+            )]),
             card("Checks", vec![
                 json!({
                     "kind": "progress",
@@ -1000,11 +1189,19 @@ fn overview(analysis: &Analysis) -> Value {
                     "max": analysis.checks.len().max(1) as f64,
                     "color": if passed == analysis.checks.len() { "positive" } else { "warning" }
                 }),
-                table(&["Check", "Status", "Detail"], checks_rows)
+                table_weighted(&["Check", "Status", "Detail"], checks_rows, &[1.4, 0.8, 3.0])
             ]),
             card("Warnings", warning_children),
-            card("Languages", vec![table(&["Language", "Files", "Lines"], language_rows)]),
-            card("Manifests", vec![table(&["Path", "Ecosystem", "Name", "Deps"], manifest_rows)])
+            card("Languages", vec![table_weighted(
+                &["Language", "Files", "Lines"],
+                language_rows,
+                &[1.6, 0.7, 0.8]
+            )]),
+            card("Manifests", vec![table_weighted(
+                &["Path", "Ecosystem", "Name", "Deps"],
+                manifest_rows,
+                &[2.4, 1.0, 1.2, 0.7]
+            )])
         ]
     })
 }
@@ -1020,7 +1217,7 @@ fn languages(analysis: &Analysis) -> Value {
     let labels = if top.is_empty() {
         vec!["No files".to_string()]
     } else {
-        top.iter().map(|(name, _)| name.to_string()).collect()
+        top.iter().map(|(name, _)| language_label(name)).collect()
     };
     let values = if top.is_empty() {
         vec![0.0]
@@ -1031,7 +1228,7 @@ fn languages(analysis: &Analysis) -> Value {
         .iter()
         .map(|(name, stats)| {
             vec![
-                name.to_string(),
+                language_label(name),
                 stats.files.to_string(),
                 stats.lines.to_string(),
                 format!("{:.1}%", percent(stats.lines, analysis.total_lines)),
@@ -1052,7 +1249,11 @@ fn languages(analysis: &Analysis) -> Value {
                     "height": 230
                 })
             ]),
-            card("Language breakdown", vec![table(&["Language", "Files", "Lines", "Share", "Size"], rows)])
+            card("Language breakdown", vec![table_weighted(
+                &["Language", "Files", "Lines", "Share", "Size"],
+                rows,
+                &[1.7, 0.7, 0.8, 0.8, 0.9]
+            )])
         ]
     })
 }
@@ -1066,12 +1267,15 @@ fn dependencies(analysis: &Analysis) -> Value {
                 manifest.path.clone(),
                 manifest.ecosystem.clone(),
                 manifest.name.clone(),
-                manifest.version.clone(),
                 manifest
                     .deps
                     .map(|deps| deps.to_string())
                     .unwrap_or_else(|| "—".into()),
-                manifest.detail.clone(),
+                manifest
+                    .resolved
+                    .map(|deps| deps.to_string())
+                    .unwrap_or_else(|| "—".into()),
+                manifest.resolution.clone(),
             ]
         })
         .collect();
@@ -1113,60 +1317,42 @@ fn dependencies(analysis: &Analysis) -> Value {
         "kind": "column",
         "gap": 12,
         "children": [
-            card("Manifests", vec![table(&["Path", "Ecosystem", "Name", "Version", "Deps", "Detail"], manifest_rows)]),
-            card("Toolchains", vec![table(&["Tool", "Status", "Version"], tool_rows)]),
-            card("Project files", vec![table(&["Kind", "Status"], lock_rows)])
+            card("Dependencies", vec![table_weighted(
+                &["Path", "Ecosystem", "Name", "Declared", "Resolved", "Source"],
+                manifest_rows,
+                &[2.5, 1.0, 1.2, 0.8, 0.8, 1.2]
+            )]),
+            card("Toolchains", vec![table_weighted(
+                &["Tool", "Status", "Version"],
+                tool_rows,
+                &[1.0, 1.0, 3.0]
+            )]),
+            card("Project files", vec![table_weighted(
+                &["Kind", "Status"],
+                lock_rows,
+                &[1.0, 1.0]
+            )])
         ]
     })
 }
 
 fn files_tab(analysis: &Analysis) -> Value {
-    let mut by_size = analysis.files.iter().collect::<Vec<_>>();
-    by_size.sort_by_key(|file| std::cmp::Reverse(file.size));
-    let size_rows = by_size
+    let mut files = analysis
+        .files
         .iter()
-        .take(20)
+        .filter(|file| file.language != "Other")
+        .collect::<Vec<_>>();
+    files.sort_by_key(|file| std::cmp::Reverse(file.lines));
+    let rows = files
+        .iter()
+        .take(100)
         .map(|file| {
             vec![
                 file.path.clone(),
+                language_label(&file.language),
+                file.lines.to_string(),
                 fmt_size(file.size),
-                file.lines.to_string(),
-                file.language.clone(),
-            ]
-        })
-        .collect();
-    let mut by_lines = analysis
-        .files
-        .iter()
-        .filter(|file| file.source)
-        .collect::<Vec<_>>();
-    by_lines.sort_by_key(|file| std::cmp::Reverse(file.lines));
-    let line_rows = by_lines
-        .iter()
-        .take(20)
-        .map(|file| {
-            vec![
-                file.path.clone(),
-                file.lines.to_string(),
-                file.language.clone(),
                 file.todo.to_string(),
-            ]
-        })
-        .collect();
-    let mut hotspots = analysis
-        .files
-        .iter()
-        .filter(|file| file.todo > 0)
-        .collect::<Vec<_>>();
-    hotspots.sort_by_key(|file| std::cmp::Reverse(file.todo));
-    let hotspot_rows = hotspots
-        .iter()
-        .take(20)
-        .map(|file| {
-            vec![
-                file.path.clone(),
-                file.todo.to_string(),
-                file.language.clone(),
             ]
         })
         .collect();
@@ -1174,9 +1360,20 @@ fn files_tab(analysis: &Analysis) -> Value {
         "kind": "column",
         "gap": 12,
         "children": [
-            card("Largest files", vec![table(&["Path", "Size", "Lines", "Language"], size_rows)]),
-            card("Longest source files", vec![table(&["Path", "Lines", "Language", "Markers"], line_rows)]),
-            card("TODO hotspots", vec![table(&["Path", "Markers", "Language"], hotspot_rows)])
+            text(
+                format!(
+                    "{} files · {} lines · showing 100 by lines",
+                    analysis.files.len(),
+                    analysis.total_lines
+                ),
+                "caption",
+                "muted"
+            ),
+            table_weighted(
+                &["Path", "Language", "Lines", "Size", "Markers"],
+                rows,
+                &[3.8, 1.2, 0.7, 0.8, 0.7]
+            )
         ]
     })
 }
@@ -1218,14 +1415,35 @@ fn todo_tab(analysis: &Analysis) -> Value {
         "kind": "column",
         "gap": 12,
         "children": [
-            card("Summary", vec![table(&["Metric", "Value"], summary_rows)]),
-            card("By tag", vec![table(&["Tag", "Count"], tag_rows)]),
-            card("Marker inventory", vec![table(&["Path", "Line", "Tag", "Excerpt"], rows)])
+            card("Summary", vec![table_weighted(
+                &["Metric", "Value"],
+                summary_rows,
+                &[1.8, 1.0]
+            )]),
+            card("By tag", vec![table_weighted(
+                &["Tag", "Count"],
+                tag_rows,
+                &[1.0, 1.0]
+            )]),
+            card("Marker inventory", vec![table_weighted(
+                &["Path", "Line", "Tag", "Excerpt"],
+                rows,
+                &[2.6, 0.6, 0.8, 3.0]
+            )])
         ]
     })
 }
 
 fn tree(state: &State) -> Value {
+    let last_scan = state.analysis.as_ref().map_or_else(
+        || "Last scan: —".to_string(),
+        |analysis| {
+            format!(
+                "Last scan: {} · {} ms",
+                analysis.scanned_at, analysis.scanned_ms
+            )
+        },
+    );
     let body = if let Some(analysis) = &state.analysis {
         match state.tab {
             0 => overview(analysis),
@@ -1255,10 +1473,10 @@ fn tree(state: &State) -> Value {
                     "kind": "row",
                     "gap": 8,
                     "children": [
-                        {"kind": "button", "label": "Rescan", "handler": "refresh", "disabled": false},
-                        {"kind": "toggle", "label": "Live (5 s)", "value": state.live, "handler": "live"}
+                        {"kind": "button", "label": "Rescan", "handler": "refresh", "disabled": false}
                     ]
                 },
+                text(last_scan, "caption", "muted"),
                 body
             ]
         }]
@@ -1374,16 +1592,7 @@ fn main() {
                     _ => {}
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {
-                if state.live
-                    && state
-                        .last_scan
-                        .is_some_and(|last| last.elapsed() > Duration::from_secs(5))
-                {
-                    state.rescan();
-                    publish(&mut out, &state);
-                }
-            }
+            Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }

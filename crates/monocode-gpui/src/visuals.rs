@@ -497,33 +497,43 @@ impl VisualView {
                     })
                     .into_any_element()
             }
-            Node::Table { columns, rows } => {
+            Node::Table {
+                columns,
+                rows,
+                weights,
+            } => {
                 let mut table = div()
                     .id(SharedString::from(format!("visual-table-{key}")))
                     .w_full()
-                    .overflow_x_scroll()
+                    .min_w_0()
                     .flex()
                     .flex_col()
                     .text_size(px(12.));
-                let count = columns.len().max(1);
-                let width = (self.width.get() / count as f32).max(100.);
+                let fallback = 1.;
+                let weights = (0..columns.len())
+                    .map(|index| weights.get(index).copied().unwrap_or(fallback))
+                    .collect::<Vec<_>>();
                 let row = |cells: &[String], header: bool| {
                     div()
+                        .w_full()
+                        .min_w_0()
                         .flex()
-                        .min_w(px(width * count as f32))
                         .border_b_1()
                         .border_color(content(0.08))
                         .when(header, |d| {
                             d.font_weight(FontWeight::SEMIBOLD)
                                 .text_color(content(0.65))
                         })
-                        .children(cells.iter().map(|cell| {
+                        .children(cells.iter().enumerate().map(|(index, cell)| {
                             div()
-                                .w(px(width))
-                                .flex_shrink_0()
-                                .px_2()
-                                .py_2()
-                                .child(cell.clone())
+                                .min_w_0()
+                                .flex_grow(weights[index])
+                                .flex_shrink(1.)
+                                .flex_basis(px(0.))
+                                .overflow_hidden()
+                                .px(px(8.))
+                                .py(px(5.))
+                                .child(div().min_w_0().truncate().child(cell.clone()))
                         }))
                 };
                 table = table.child(row(columns, true));

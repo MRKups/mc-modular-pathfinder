@@ -146,6 +146,9 @@ pub enum Node {
     Table {
         columns: Vec<String>,
         rows: Vec<Vec<String>>,
+        /// Relative column widths. Empty means equal columns.
+        #[serde(default)]
+        weights: Vec<f32>,
     },
     Chart {
         chart_type: ChartKind,
@@ -461,9 +464,19 @@ impl Node {
                 bounded(*max, 1e-9, 1e12, "progress max")?;
                 bounded(*value, 0., *max, "progress value")?;
             }
-            Self::Table { columns, rows } => {
+            Self::Table {
+                columns,
+                rows,
+                weights,
+            } => {
                 if columns.is_empty() || columns.len() > 24 || rows.len() > 250 {
                     return Err("Table needs 1–24 columns and at most 250 rows".into());
+                }
+                if !weights.is_empty() && weights.len() != columns.len() {
+                    return Err("Table weights must match its columns".into());
+                }
+                for weight in weights {
+                    bounded(*weight as f64, 0.1, 20., "table column weight")?;
                 }
                 for column in columns {
                     budget.text(column, 256)?;

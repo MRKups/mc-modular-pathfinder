@@ -20,7 +20,9 @@ fn button(node: &Node) -> &str {
 
 #[test]
 fn native_state_and_handlers_survive_rerenders() {
-    let mut vm = runtime("const s=visual.state({count:0}); return () => visual.column([visual.text(s.count),visual.button('Add',()=>s.count++)]);");
+    let mut vm = runtime(
+        "const s=visual.state({count:0}); return () => visual.column([visual.text(s.count),visual.button('Add',()=>s.count++)]);",
+    );
     let first = vm.render().unwrap();
     let updated = vm.dispatch(button(&first), json!(null)).unwrap();
     let Node::Column { children, .. } = &updated else {
@@ -65,10 +67,11 @@ fn stale_and_unregistered_handlers_are_rejected() {
     let mut vm = runtime("return () => visual.button('Press',()=>{});");
     let first = vm.render().unwrap();
     vm.dispatch(button(&first), json!(null)).unwrap();
-    assert!(vm
-        .dispatch(button(&first), json!(null))
-        .unwrap_err()
-        .contains("stale"));
+    assert!(
+        vm.dispatch(button(&first), json!(null))
+            .unwrap_err()
+            .contains("stale")
+    );
     // A queued old native event must not stop the currently active controls.
     let fresh = vm.render().unwrap();
     assert!(vm.dispatch(button(&fresh), json!(null)).is_ok());
@@ -107,16 +110,19 @@ fn control_payloads_are_checked_before_callbacks() {
             .as_str()
             .unwrap()
             .to_owned();
-        assert!(vm
-            .dispatch(&id, value)
-            .unwrap_err()
-            .contains("Invalid value"));
+        assert!(
+            vm.dispatch(&id, value)
+                .unwrap_err()
+                .contains("Invalid value")
+        );
     }
 }
 
 #[test]
 fn input_select_and_slider_update_state() {
-    let mut vm = runtime("const s={value:'old'};return () => visual.column([visual.text(s.value),visual.input('Name',s.value,v=>s.value=v)]);");
+    let mut vm = runtime(
+        "const s={value:'old'};return () => visual.column([visual.text(s.value),visual.input('Name',s.value,v=>s.value=v)]);",
+    );
     let node = vm.render().unwrap();
     let id = serde_json::to_value(&node).unwrap()["children"][1]["handler"]
         .as_str()
@@ -132,7 +138,9 @@ fn input_select_and_slider_update_state() {
         .dispatch(first["handler"].as_str().unwrap(), json!(1))
         .unwrap();
     assert!(matches!(updated, Node::Select { selected: 1, .. }));
-    let mut vm = runtime("const s={value:2};return () => visual.slider('Value',s.value,0,10,v=>s.value=v,{step:0.5});");
+    let mut vm = runtime(
+        "const s={value:2};return () => visual.slider('Value',s.value,0,10,v=>s.value=v,{step:0.5});",
+    );
     let first = serde_json::to_value(vm.render().unwrap()).unwrap();
     let updated = vm
         .dispatch(first["handler"].as_str().unwrap(), json!(3.5))
@@ -191,9 +199,11 @@ fn runaway_initialization_render_and_handler_are_interrupted() {
             .unwrap()
             .contains("time budget")
     );
-    assert!(check("return () => {while(true){} };")
-        .unwrap_err()
-        .contains("time budget"));
+    assert!(
+        check("return () => {while(true){} };")
+            .unwrap_err()
+            .contains("time budget")
+    );
     assert!(
         check("return () => visual.button('Loop',()=>{while(true){}});")
             .unwrap_err()
@@ -204,12 +214,16 @@ fn runaway_initialization_render_and_handler_are_interrupted() {
 
 #[test]
 fn script_errors_keep_actionable_messages() {
-    assert!(check("throw new Error('missing dataset');")
-        .unwrap_err()
-        .contains("missing dataset"));
-    assert!(check("return () => { throw new Error('wrong chart'); };")
-        .unwrap_err()
-        .contains("wrong chart"));
+    assert!(
+        check("throw new Error('missing dataset');")
+            .unwrap_err()
+            .contains("missing dataset")
+    );
+    assert!(
+        check("return () => { throw new Error('wrong chart'); };")
+            .unwrap_err()
+            .contains("wrong chart")
+    );
     assert!(
         check("return () => visual.button('Bad',()=>{throw new Error('bad update')});")
             .unwrap_err()
@@ -254,7 +268,9 @@ fn structural_and_resource_limits_reject_unbounded_views() {
         "return () => visual.scene([visual.object({kind:'mesh',vertices:[[0,0,0],[1,0,0],[0,1,0]],indices:[[0,1,3]]})]);",
         "return () => visual.scene(Array.from({length:24},()=>visual.object({kind:'sphere'})));",
         "return () => visual.input('Too long','x'.repeat(4097),()=>{});",
-    ] { assert!(check(source).is_err(), "accepted {source}"); }
+    ] {
+        assert!(check(source).is_err(), "accepted {source}");
+    }
     assert!(VisualRuntime::new(&" ".repeat(MAX_SOURCE_BYTES + 1)).is_err());
     assert!(check("return () => visual.text('x'.repeat(64*1024*1024));").is_err());
 }
@@ -360,10 +376,11 @@ fn page_tabs_default_the_nav_width_and_require_one_content_child() {
         ]
     }))
     .unwrap();
-    assert!(bad
-        .validate()
-        .unwrap_err()
-        .contains("at most one content child"));
+    assert!(
+        bad.validate()
+            .unwrap_err()
+            .contains("at most one content child")
+    );
 }
 
 #[test]
@@ -393,4 +410,33 @@ fn code_editor_is_bounded_and_read_only_defaults_false() {
     }))
     .unwrap();
     assert!(bad.validate().unwrap_err().contains("code editor height"));
+}
+
+#[test]
+fn table_weights_are_optional_and_must_match_columns() {
+    let table: Node = serde_json::from_value(json!({
+        "kind": "table",
+        "columns": ["Path", "Lines"],
+        "rows": [["src/main.rs", "42"]],
+        "weights": [3.0, 1.0]
+    }))
+    .unwrap();
+    table.validate().unwrap();
+
+    let plain: Node = serde_json::from_value(json!({
+        "kind": "table",
+        "columns": ["Path"],
+        "rows": [["src/main.rs"]]
+    }))
+    .unwrap();
+    plain.validate().unwrap();
+
+    let bad: Node = serde_json::from_value(json!({
+        "kind": "table",
+        "columns": ["Path", "Lines"],
+        "rows": [["src/main.rs", "42"]],
+        "weights": [3.0]
+    }))
+    .unwrap();
+    assert!(bad.validate().unwrap_err().contains("weights must match"));
 }

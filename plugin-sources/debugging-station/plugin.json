@@ -1,6 +1,6 @@
 {
   "id": "com.example.debugging-station",
-  "name": "Debugging Station",
+  "name": "Debugger",
   "protocol": 1,
   "command": [
     "./bin/debugging-station"
@@ -9,8 +9,8 @@
   "ui": [
     {
       "id": "debugging-station",
-      "title": "Debugging Station",
-      "icon": "terminal",
+      "title": "Debugger",
+      "icon": "bug",
       "order": 3
     }
   ]

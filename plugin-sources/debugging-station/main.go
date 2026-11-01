@@ -1,8 +1,8 @@
-//! A read-only live debugging station.
+//! A read-only process and port inspector.
 //!
-//! It samples processes, load, memory, disks, and network sockets with ordinary
-//! OS tools, then renders the snapshot through Monocode's native component
-//! schema. stdout is protocol traffic only; diagnostics go to stderr.
+//! It samples processes and sockets with ordinary OS tools, lets the user pick
+//! a project target, and renders the inspector through Monocode's native
+//! component schema. stdout is protocol traffic only; diagnostics go to stderr.
 
 package main
 
@@ -115,10 +115,9 @@ type State struct {
 	Project       string
 	Snapshot      *snapshot
 	Tab           int
-	Live          bool
+	TargetPID     int
 	Sort          int
 	Filter        string
-	LastScan      time.Time
 	RequestID     int
 	Build         []buildSystem
 	BuildTools    []toolInfo
@@ -131,8 +130,7 @@ type State struct {
 func newState() *State {
 	return &State{
 		Tab:       0,
-		Live:      true,
-		Sort:      0,
+		TargetPID: 0,
 		RequestID: 2,
 	}
 }
@@ -175,7 +173,7 @@ func section(title string, children []any) map[string]any {
 	return map[string]any{"kind": "column", "gap": 8, "children": all}
 }
 
-func table(columns []string, rows [][]string) map[string]any {
+func table(columns []string, rows [][]string, weights ...float64) map[string]any {
 	cleanRows := make([][]string, 0, min(len(rows), 250))
 	for _, row := range rows {
 		if len(cleanRows) >= 250 {
@@ -190,7 +188,11 @@ func table(columns []string, rows [][]string) map[string]any {
 		}
 		cleanRows = append(cleanRows, cleanRow)
 	}
-	return map[string]any{"kind": "table", "columns": columns, "rows": cleanRows}
+	node := map[string]any{"kind": "table", "columns": columns, "rows": cleanRows}
+	if len(weights) == len(columns) {
+		node["weights"] = weights
+	}
+	return node
 }
 
 func button(label, handler string, disabled bool) map[string]any {
@@ -1617,26 +1619,12 @@ func sample(state *State) {
 	if msg != "" {
 		result.Errors = append(result.Errors, msg)
 	}
-	result.Load1, result.Load5, result.Load15, msg = loadAverage()
-	if msg != "" {
-		result.Errors = append(result.Errors, msg)
-	}
-	result.MemoryTotal, result.MemoryUsed, result.MemoryFree, result.SwapTotal, result.SwapUsed, msg = memory()
-	if msg != "" {
-		result.Errors = append(result.Errors, msg)
-	}
-	result.Disks, msg = diskInfo()
-	if msg != "" {
-		result.Errors = append(result.Errors, msg)
-	}
 	result.Connections, result.Listeners, result.States, msg = network()
 	if msg != "" {
 		result.Errors = append(result.Errors, msg)
 	}
-	result.Uptime = uptime()
 	result.SampledMS = time.Since(started).Milliseconds()
 	state.Snapshot = &result
-	state.LastScan = time.Now()
 }
 
 func (s *snapshot) filteredProcesses(state *State) []process {
@@ -1760,7 +1748,11 @@ func buildTab(state *State) map[string]any {
 	}
 	targetContent := []any{}
 	if len(targetRows) > 0 {
-		targetContent = append(targetContent, table([]string{"Name", "Command", "Source"}, targetRows))
+		targetContent = append(targetContent, table(
+			[]string{"Name", "Command", "Source"},
+			targetRows,
+			1.0, 2.4, 1.2,
+		))
 	} else {
 		targetContent = append(targetContent, text("No named targets.", "body", "muted"))
 	}
@@ -1768,19 +1760,31 @@ func buildTab(state *State) map[string]any {
 		map[string]any{"kind": "row", "gap": 8, "children": []any{
 			button("Refresh", "refresh_build", false),
 		}},
-		text(fmt.Sprintf("%d project(s) · showing %s · scanned %s · %d ms", len(state.Build), selected.Directory, state.BuildScanned, state.BuildMS), "caption", "muted"),
+		text(fmt.Sprintf("%d project(s) · %s · scanned %s · %d ms", len(state.Build), selected.Directory, state.BuildScanned, state.BuildMS), "caption", "muted"),
 		section("Projects", []any{
-			table([]string{"Directory", "System", "Manager", "Manifest"}, projectRows),
+			table(
+				[]string{"Directory", "System", "Manager", "Manifest"},
+				projectRows,
+				2.4, 1.0, 1.0, 1.2,
+			),
 		}),
 		section("Selected", []any{
-			table([]string{"Field", "Value"}, summaryRows),
+			table([]string{"Field", "Value"}, summaryRows, 1.0, 3.0),
 		}),
 		section("Commands", []any{
-			table([]string{"Action", "Command", "Source"}, commandRows),
+			table(
+				[]string{"Action", "Command", "Source"},
+				commandRows,
+				1.0, 2.8, 1.2,
+			),
 		}),
 		section("Targets", targetContent),
 		section("Tools", []any{
-			table([]string{"Tool", "Status", "Version", "Needed by"}, toolRows),
+			table(
+				[]string{"Tool", "Status", "Version", "Needed by"},
+				toolRows,
+				1.0, 1.0, 3.0, 2.0,
+			),
 		}),
 	}
 	if len(state.BuildWarnings) > 0 {
@@ -1795,9 +1799,9 @@ func buildTab(state *State) map[string]any {
 
 func processesTab(s *snapshot, state *State) map[string]any {
 	rows := s.filteredProcesses(state)
-	tableRows := make([][]string, 0, min(len(rows), 80))
+	tableRows := make([][]string, 0, min(len(rows), 100))
 	for _, item := range rows {
-		if len(tableRows) >= 80 {
+		if len(tableRows) >= 100 {
 			break
 		}
 		tableRows = append(tableRows, []string{
@@ -1807,13 +1811,16 @@ func processesTab(s *snapshot, state *State) map[string]any {
 			fmt.Sprintf("%.1f", item.Memory),
 			humanBytes(item.RSS),
 			item.State,
-			compact(item.Command, 80),
+			processCommand(item),
 		})
 	}
 	return map[string]any{
 		"kind": "column",
 		"gap":  12,
 		"children": []any{
+			map[string]any{"kind": "row", "gap": 8, "children": []any{
+				button("Refresh", "refresh", false),
+			}},
 			map[string]any{
 				"kind":        "input",
 				"label":       "Process filter",
@@ -1821,20 +1828,149 @@ func processesTab(s *snapshot, state *State) map[string]any {
 				"placeholder": "name, argument, or PID",
 				"handler":     "filter",
 			},
-			map[string]any{"kind": "row", "gap": 8, "children": []any{
-				button("Refresh", "refresh", false),
-				toggle("Live (2 s)", state.Live, "live"),
-			}},
-			text(fmt.Sprintf("%d of %d process(es)", min(len(rows), 80), len(rows)), "caption", "muted"),
-			table([]string{"PID", "PPID", "CPU %", "MEM %", "RSS", "State", "Command"}, tableRows),
+			text(fmt.Sprintf("%d of %d process(es)", min(len(rows), 100), len(rows)), "caption", "muted"),
+			table(
+				[]string{"PID", "PPID", "CPU %", "MEM %", "RSS", "State", "Command"},
+				tableRows,
+				0.6, 0.6, 0.7, 0.7, 0.8, 0.8, 4.2,
+			),
 		},
 	}
 }
 
-func networkTab(s *snapshot, state *State) map[string]any {
-	connectionRows := make([][]string, 0, min(len(s.Connections), 100))
+func processCommand(item process) string {
+	if item.Args != "" {
+		return compact(item.Args, 100)
+	}
+	return compact(item.Command, 100)
+}
+
+func processSummary(item process) string {
+	fields := strings.Fields(item.Args)
+	if len(fields) > 1 {
+		command := filepath.Base(fields[0])
+		last := filepath.Base(fields[len(fields)-1])
+		return compact(command+" "+last, 56)
+	}
+	if item.Args != "" {
+		return compact(item.Args, 56)
+	}
+	return compact(item.Command, 56)
+}
+
+func projectTargets(s *snapshot, state *State) []process {
+	if state.Project == "" {
+		return nil
+	}
+	name := filepath.Base(state.Project)
+	targets := make([]process, 0, 12)
+	for _, item := range s.Processes {
+		if strings.Contains(item.Args, state.Project) ||
+			strings.Contains(item.Command, state.Project) ||
+			(name != "" && (strings.Contains(item.Args, name) || strings.Contains(item.Command, name))) {
+			targets = append(targets, item)
+		}
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].CPU == targets[j].CPU {
+			return targets[i].PID < targets[j].PID
+		}
+		return targets[i].CPU > targets[j].CPU
+	})
+	if len(targets) > 12 {
+		targets = targets[:12]
+	}
+	return targets
+}
+
+func selectedTarget(targets []process, state *State) (process, bool) {
+	for _, item := range targets {
+		if item.PID == state.TargetPID {
+			return item, true
+		}
+	}
+	if len(targets) > 0 {
+		return targets[0], true
+	}
+	return process{}, false
+}
+
+func debugPage(s *snapshot, state *State) map[string]any {
+	children := []any{
+		map[string]any{"kind": "row", "gap": 8, "children": []any{
+			button("Refresh", "refresh", false),
+		}},
+	}
+	targets := projectTargets(s, state)
+	if len(targets) == 0 {
+		children = append(children, text("No process is running from this project.", "body", "muted"))
+		return map[string]any{"kind": "column", "gap": 12, "children": children}
+	}
+	selected, ok := selectedTarget(targets, state)
+	if !ok {
+		return map[string]any{"kind": "column", "gap": 12, "children": children}
+	}
+	buttons := make([]any, 0, len(targets))
+	for _, item := range targets {
+		marker := "○"
+		if item.PID == selected.PID {
+			marker = "●"
+		}
+		buttons = append(buttons, button(
+			fmt.Sprintf("%s PID %d · %s", marker, item.PID, processSummary(item)),
+			fmt.Sprintf("target:%d", item.PID),
+			false,
+		))
+	}
+	children = append(children, section("Targets", []any{
+		map[string]any{"kind": "column", "gap": 4, "children": buttons},
+	}))
+	detailRows := [][]string{
+		{"PID", strconv.Itoa(selected.PID)},
+		{"Parent PID", strconv.Itoa(selected.PPID)},
+		{"State", selected.State},
+		{"CPU", fmt.Sprintf("%.1f%%", selected.CPU)},
+		{"Memory", fmt.Sprintf("%.1f%% · %s", selected.Memory, humanBytes(selected.RSS))},
+		{"Command", compact(selected.Command, 180)},
+		{"Arguments", compact(selected.Args, 240)},
+	}
+	children = append(children, section("Inspector", []any{
+		table([]string{"Field", "Value"}, detailRows, 1.0, 4.0),
+	}))
+	portRows := make([][]string, 0, 24)
+	for _, item := range s.Listeners {
+		if item.PID == selected.PID {
+			portRows = append(portRows, []string{"listen", item.Protocol, item.Local, item.Remote, "LISTEN"})
+		}
+	}
 	for _, item := range s.Connections {
-		if len(connectionRows) >= 100 {
+		if item.PID == selected.PID {
+			stateName := item.State
+			if stateName == "" {
+				stateName = "OPEN"
+			}
+			portRows = append(portRows, []string{"socket", item.Protocol, item.Local, item.Remote, stateName})
+			if len(portRows) >= 24 {
+				break
+			}
+		}
+	}
+	if len(portRows) > 0 {
+		children = append(children, section("Ports", []any{
+			table([]string{"Kind", "Proto", "Local", "Remote", "State"}, portRows, 0.7, 0.7, 2.0, 2.0, 1.0),
+		}))
+	} else {
+		children = append(children, section("Ports", []any{
+			text("No open sockets.", "body", "muted"),
+		}))
+	}
+	return map[string]any{"kind": "column", "gap": 18, "children": children}
+}
+
+func portsPage(s *snapshot, state *State) map[string]any {
+	connectionRows := make([][]string, 0, min(len(s.Connections), 120))
+	for _, item := range s.Connections {
+		if len(connectionRows) >= 120 {
 			break
 		}
 		stateName := item.State
@@ -1843,9 +1979,9 @@ func networkTab(s *snapshot, state *State) map[string]any {
 		}
 		connectionRows = append(connectionRows, []string{item.Protocol, item.Local, item.Remote, stateName, item.Process})
 	}
-	listenerRows := make([][]string, 0, min(len(s.Listeners), 100))
+	listenerRows := make([][]string, 0, min(len(s.Listeners), 120))
 	for _, item := range s.Listeners {
-		if len(listenerRows) >= 100 {
+		if len(listenerRows) >= 120 {
 			break
 		}
 		listenerRows = append(listenerRows, []string{item.Protocol, item.Local, item.Port, item.Process})
@@ -1855,71 +1991,16 @@ func networkTab(s *snapshot, state *State) map[string]any {
 		"gap":  18,
 		"children": []any{
 			map[string]any{"kind": "row", "gap": 8, "children": []any{
-				toggle("Live (2 s)", state.Live, "live"),
 				button("Refresh", "refresh", false),
 			}},
 			section("States", []any{
-				table([]string{"State", "Count"}, stateRows(s.States)),
+				table([]string{"State", "Count"}, stateRows(s.States), 2.0, 1.0),
 			}),
 			section("Listening", []any{
-				table([]string{"Proto", "Address", "Port", "Process"}, listenerRows),
+				table([]string{"Proto", "Address", "Port", "Process"}, listenerRows, 0.9, 2.0, 0.8, 3.0),
 			}),
 			section("Connections", []any{
-				table([]string{"Proto", "Local", "Remote", "State", "Process"}, connectionRows),
-			}),
-		},
-	}
-}
-
-func systemTab(s *snapshot, state *State) map[string]any {
-	diskRows := make([][]string, 0, len(s.Disks))
-	for _, item := range s.Disks {
-		diskRows = append(diskRows, []string{
-			item.Mount,
-			humanBytes(item.Size),
-			humanBytes(item.Used),
-			humanBytes(item.Free),
-			item.Percent,
-		})
-	}
-	memoryPercent := 0.0
-	if s.MemoryTotal > 0 {
-		memoryPercent = 100 * float64(s.MemoryUsed) / float64(s.MemoryTotal)
-	}
-	swap := "not reported"
-	if s.SwapTotal > 0 {
-		swap = fmt.Sprintf("%s of %s", humanBytes(s.SwapUsed), humanBytes(s.SwapTotal))
-	}
-	hostRows := [][]string{
-		{"Hostname", s.Hostname},
-		{"OS", s.OS},
-		{"Arch", s.Arch},
-		{"Uptime", s.Uptime},
-		{"CPUs", strconv.Itoa(s.CPUs)},
-		{"Load", fmt.Sprintf("%.2f / %.2f / %.2f", s.Load1, s.Load5, s.Load15)},
-		{"Sampled", fmt.Sprintf("%s · %d ms", s.SampledAt, s.SampledMS)},
-	}
-	capacityRows := [][]string{
-		{"Used", humanBytes(s.MemoryUsed), fmt.Sprintf("%.1f%% of %s", memoryPercent, humanBytes(s.MemoryTotal))},
-		{"Free", humanBytes(s.MemoryFree), ""},
-		{"Swap", swap, ""},
-	}
-	return map[string]any{
-		"kind": "column",
-		"gap":  18,
-		"children": []any{
-			map[string]any{"kind": "row", "gap": 8, "children": []any{
-				toggle("Live (2 s)", state.Live, "live"),
-				button("Refresh", "refresh", false),
-			}},
-			section("Host", []any{
-				table([]string{"Field", "Value"}, hostRows),
-			}),
-			section("Memory", []any{
-				table([]string{"Metric", "Value", "Detail"}, capacityRows),
-			}),
-			section("Disks", []any{
-				table([]string{"Mount", "Size", "Used", "Free", "Use"}, diskRows),
+				table([]string{"Proto", "Local", "Remote", "State", "Process"}, connectionRows, 0.8, 2.0, 2.0, 1.0, 2.0),
 			}),
 		},
 	}
@@ -1928,7 +2009,7 @@ func systemTab(s *snapshot, state *State) map[string]any {
 func tree(state *State) map[string]any {
 	s := state.Snapshot
 	var body map[string]any
-	if state.Tab == 0 {
+	if state.Tab == 3 {
 		body = buildTab(state)
 	} else if s == nil {
 		body = map[string]any{
@@ -1941,12 +2022,12 @@ func tree(state *State) map[string]any {
 		}
 	} else {
 		switch state.Tab {
+		case 0:
+			body = debugPage(s, state)
 		case 1:
 			body = processesTab(s, state)
-		case 2:
-			body = networkTab(s, state)
 		default:
-			body = systemTab(s, state)
+			body = portsPage(s, state)
 		}
 	}
 	content := []any{body}
@@ -1960,7 +2041,7 @@ func tree(state *State) map[string]any {
 	page := map[string]any{"kind": "column", "gap": 18, "children": content}
 	return map[string]any{
 		"kind":      "page_tabs",
-		"labels":    []string{"Build", "Processes", "Network", "System"},
+		"labels":    []string{"Debug", "Processes", "Ports", "Build"},
 		"selected":  state.Tab,
 		"handler":   "tab",
 		"nav_width": 180,
@@ -1977,22 +2058,24 @@ func (s *State) handleEvent(handler string, value any) {
 	case "tab":
 		if number, ok := value.(float64); ok {
 			s.Tab = int(math.Max(0, math.Min(3, number)))
-			if s.Tab == 0 && s.BuildRoot != s.Project {
+			if s.Tab == 3 && s.BuildRoot != s.Project {
 				refreshBuild(s)
 			}
 		}
 	case "refresh_build":
 		refreshBuild(s)
-	case "live":
-		if enabled, ok := value.(bool); ok {
-			s.Live = enabled
-		}
 	case "filter":
 		if value, ok := value.(string); ok {
 			s.Filter = value
 		}
 	case "refresh":
 		sample(s)
+	default:
+		if strings.HasPrefix(handler, "target:") {
+			if pid, err := strconv.Atoi(strings.TrimPrefix(handler, "target:")); err == nil {
+				s.TargetPID = pid
+			}
+		}
 	}
 }
 
@@ -2019,8 +2102,6 @@ func main() {
 	}()
 
 	state := newState()
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
 	requestWorkspace := func() {
 		send(map[string]any{
 			"jsonrpc": "2.0",
@@ -2031,59 +2112,52 @@ func main() {
 	}
 
 	for {
-		select {
-		case message, ok := <-incoming:
-			if !ok {
-				return
-			}
-			method, _ := message["method"].(string)
-			if method == "" {
-				if id, ok := message["id"].(float64); ok && int(id) == state.RequestID {
-					if result, ok := message["result"].(map[string]any); ok {
-						if root, ok := result["root"].(string); ok {
-							state.Project = root
-							refreshBuild(state)
-							sample(state)
-							publish(state)
-						}
+		message, ok := <-incoming
+		if !ok {
+			return
+		}
+		method, _ := message["method"].(string)
+		if method == "" {
+			if id, ok := message["id"].(float64); ok && int(id) == state.RequestID {
+				if result, ok := message["result"].(map[string]any); ok {
+					if root, ok := result["root"].(string); ok {
+						state.Project = root
+						refreshBuild(state)
+						sample(state)
+						publish(state)
 					}
 				}
+			}
+			continue
+		}
+		switch method {
+		case "initialize":
+			respond(message["id"], map[string]any{
+				"protocol": 1,
+				"ui": []any{map[string]any{
+					"id":    surface,
+					"title": "Debugger",
+					"icon":  "bug",
+					"order": 3,
+				}},
+			})
+			sample(state)
+			publish(state)
+			requestWorkspace()
+		case "ui.open":
+			requestWorkspace()
+			sample(state)
+			publish(state)
+		case "ui.event":
+			params, _ := message["params"].(map[string]any)
+			if params["surface"] != surface {
 				continue
 			}
-			switch method {
-			case "initialize":
-				respond(message["id"], map[string]any{
-					"protocol": 1,
-					"ui": []any{map[string]any{
-						"id":    surface,
-						"title": "Debugging Station",
-						"icon":  "terminal",
-						"order": 3,
-					}},
-				})
-				sample(state)
-				publish(state)
-				requestWorkspace()
-			case "ui.open":
-				requestWorkspace()
-				sample(state)
-				publish(state)
-			case "ui.event":
-				params, _ := message["params"].(map[string]any)
-				if params["surface"] != surface {
-					continue
-				}
-				handler, _ := params["handler"].(string)
-				state.handleEvent(handler, params["value"])
-				publish(state)
-			case "shutdown":
-				return
-			}
-		case <-ticker.C:
-			if state.Live && time.Since(state.LastScan) >= 2*time.Second {
-				sample(state)
-				publish(state)
-			}
+			handler, _ := params["handler"].(string)
+			state.handleEvent(handler, params["value"])
+			publish(state)
+		case "shutdown":
+			return
 		}
 	}
 }

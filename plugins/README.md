@@ -29,9 +29,9 @@ each marked with a small plug icon:
 
 | Plugin | Language | What it does |
 |---|---|---|
-| **Dashboard** | Python | Discovers CSV/TSV/JSON data, shapes charts, tables, gauges, donuts, heatmaps, and live file updates |
-| **Workspace Analysis** | Rust | Scans any workspace for languages, manifests, dependencies, toolchains, TODO markers, and health evidence |
-| **Debugging Station** | Go | Detects build systems and tasks, then samples live processes, memory, disks, and network connections |
+| **Notebook** | Python | Runs a persistent Python kernel with notebook cells, captured output, variables, and workspace data files |
+| **Workspace Analysis** | Rust | Reviews the current repository: languages, dependency counts, files, TODO markers, and toolchains |
+| **Debugger** | Go | Targets project processes and inspects their identity, state, command line, and open ports |
 | **Plugin Authoring** | Node.js | Vertical docs/API/scaffold/generate/editor pages, a four-step scaffold wizard, and `llm.complete` |
 
 Each one is an independent process built from `plugin-sources/<name>/`. Open
@@ -40,8 +40,8 @@ plugin process and every update crosses stdio. Every multi-page example uses
 the native `page_tabs` table-of-contents rail and an 800 px content column.
 
 Plugin rows are ordered by the optional `order` field on each surface, then
-alphabetically by title. The examples set `order` to Dashboard, Workspace
-Analysis, Debugging Station, Plugin Authoring.
+alphabetically by title. The examples set `order` to Notebook, Workspace
+Analysis, Debugger, Plugin Authoring.
 
 The authoring station can ask a configured provider for text through
 `llm.complete`. The host runs a separate, text-only, read-only session on a

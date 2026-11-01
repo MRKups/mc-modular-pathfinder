@@ -1,6 +1,6 @@
 {
   "id": "com.example.dashboard",
-  "name": "Dashboard",
+  "name": "Notebook",
   "protocol": 1,
   "command": [
     "python3",
@@ -10,8 +10,8 @@
   "ui": [
     {
       "id": "dashboard",
-      "title": "Dashboard",
-      "icon": "dashboard",
+      "title": "Notebook",
+      "icon": "note",
       "order": 1
     }
   ]

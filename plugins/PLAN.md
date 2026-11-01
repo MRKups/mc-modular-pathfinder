@@ -41,13 +41,14 @@
 
 | Plugin | Language | Job |
 |---|---|---|
-| **Dashboard** | Python | Data workbench for workspace CSV/TSV/JSON |
-| **Workspace Analysis** | Rust | Dynamic repository analysis and health evidence |
-| **Debugging Station** | Go | Build-system detection, processes, sockets, and host inspection |
+| **Notebook** | Python | Persistent Python kernel, code cells, variables, and workspace data |
+| **Workspace Analysis** | Rust | Current-repository review: languages, dependencies, files, TODO markers |
+| **Debugger** | Go | Project process targets, inspector, ports, and build configurations |
 | **Plugin Authoring** | Node.js | Docs, API reference, scaffold wizard, source editing, and LLM help |
 
-The languages follow the workload: Python for data shaping, Rust for fast
-repository walking, Go for OS inspection, Node for tooling and text generation.
+The languages follow the workload: Python for the notebook kernel, Rust for
+repository analysis, Go for OS process inspection, Node for tooling and text
+generation.
 
 ## Manifest
 
@@ -151,9 +152,9 @@ crates/monocode-gpui/src/
   plugin_host/api.rs               fixed host method table
   visuals.rs                       remote-tree VisualView mode and code editor
 plugin-sources/
-  dashboard/                       Python data workbench
-  workspace-analysis/              Rust repository analysis
-  debugging-station/               Go system inspector
+  dashboard/                       Python notebook kernel and cells
+  workspace-analysis/              Rust repository review
+  debugging-station/               Go process and port debugger
   authoring-station/               Node docs/scaffold/editor/LLM station
 plugins/
   <generated packages>             assembled by scripts/build-plugins.mjs

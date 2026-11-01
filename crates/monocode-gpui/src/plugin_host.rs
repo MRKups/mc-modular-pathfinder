@@ -134,6 +134,7 @@ fn plugin_icon(name: &str) -> &'static str {
         "search" => "search",
         "terminal" => "terminal",
         "git" => "git",
+        "bug" | "debug" => "bug",
         "dashboard" => "dashboard",
         "clock" | "timer" => "clock",
         "plug" => "plug",

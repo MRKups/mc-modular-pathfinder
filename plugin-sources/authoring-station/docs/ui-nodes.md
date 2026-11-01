@@ -25,7 +25,7 @@ vertical flow; use rows only for compact control groups.
 ```json
 {"kind":"text","text":"Hello","size":"body","color":"ink"}
 {"kind":"stat","label":"Files","value":"1,204","detail":"scanned","color":"accent"}
-{"kind":"table","columns":["Path","Lines"],"rows":[["src/main.rs","220"]]}
+{"kind":"table","columns":["Path","Lines"],"rows":[["src/main.rs","220"]],"weights":[3.0,1.0]}
 {"kind":"chart","chart_type":"bar","labels":["Rust","Go"],"height":220,
  "series":[{"label":"Lines","values":[1200,400],"color":"accent"}]}
 {"kind":"gauge","label":"Memory","value":62,"min":0,"max":100,"unit":"%","color":"warning"}
@@ -37,6 +37,9 @@ vertical flow; use rows only for compact control groups.
 `chart_type` is `bar`, `line`, or `area`. Text sizes are `caption`, `small`,
 `body`, `subtitle`, `title`, `hero`. Colors are `ink`, `muted`, `faint`,
 `accent`, `positive`, `negative`, `warning`, and `series1`…`series6`.
+
+Tables fit their container instead of scrolling horizontally. `weights` is
+optional and sets relative column widths; it must have one value per column.
 
 ## Controls
 

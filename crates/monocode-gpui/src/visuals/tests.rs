@@ -399,6 +399,7 @@ fn remote_tree_forwards_events_and_accepts_plugin_updates(cx: &mut TestAppContex
                 text: text.into(),
                 size: TextSize::Body,
                 color: ThemeColor::Ink,
+                monospace: false,
             },
             Node::Button {
                 label: "Click".into(),
@@ -407,6 +408,8 @@ fn remote_tree_forwards_events_and_accepts_plugin_updates(cx: &mut TestAppContex
             },
         ],
         gap: 8.,
+        width: None,
+        weight: None,
     };
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| {
@@ -455,13 +458,17 @@ fn remote_page_tabs_render_a_vertical_rail_and_forward_selection(cx: &mut TestAp
             selected: 0,
             handler: "page".into(),
             nav_width: 210.,
+            right_margin: false,
             children: vec![Node::Text {
                 text: "Guide body".into(),
                 size: TextSize::Body,
                 color: ThemeColor::Ink,
+                monospace: false,
             }],
         }],
         gap: 8.,
+        width: None,
+        weight: None,
     };
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| {
@@ -524,8 +531,13 @@ fn remote_code_editor_renders_and_forwards_edits(cx: &mut TestAppContext) {
             height: 220.,
             handler: "source".into(),
             read_only: false,
+            submit_handler: None,
+            selection_handler: None,
+            context_menu: Vec::new(),
         }],
         gap: 8.,
+        width: None,
+        weight: None,
     };
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| {
@@ -582,5 +594,380 @@ fn width_changes_emit_row_remeasure_events(cx: &mut TestAppContext) {
     assert!(
         count.get() > 0,
         "Responsive width changes must also remeasure the transcript row"
+    );
+}
+
+#[gpui::test]
+fn remote_table_row_click_and_compact_row_buttons_work(cx: &mut TestAppContext) {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let on_event = {
+        let events = events.clone();
+        Rc::new(move |handler: &str, value: Value| {
+            events.borrow_mut().push((handler.to_string(), value));
+        })
+    };
+    let tree: Node = serde_json::from_value(json!({
+        "kind": "column",
+        "gap": 8,
+        "children": [
+            {
+                "kind": "row",
+                "gap": 8,
+                "children": [
+                    {"kind": "button", "label": "Run", "handler": "run", "disabled": false},
+                    {"kind": "spacer"},
+                    {"kind": "text", "text": "idle", "size": "caption", "color": "muted", "monospace": true}
+                ]
+            },
+            {
+                "kind": "table",
+                "columns": ["Path", "Kind"],
+                "rows": [["a.csv", "CSV"], ["b.json", "JSON"]],
+                "handler": "pick"
+            }
+        ]
+    }))
+    .unwrap();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| {
+            cx.new(|_| {
+                VisualView::remote(
+                    "remote-table-test".into(),
+                    "Remote table".into(),
+                    tree,
+                    on_event,
+                )
+            })
+        })
+        .unwrap()
+    });
+    let visual = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_window_resize(window.into(), size(px(800.), px(500.)));
+    visual.run_until_parked();
+    let run_bounds = visual
+        .debug_bounds("visual-button-root/0/0")
+        .expect("toolbar button should render");
+    assert!(
+        run_bounds.size.width < px(120.),
+        "row button should stay compact instead of stretching: {run_bounds:?}"
+    );
+    let second_row = visual
+        .debug_bounds("visual-table-row-root/1-1")
+        .expect("selectable table row should render");
+    visual.simulate_click(second_row.center(), Default::default());
+    visual.run_until_parked();
+    assert_eq!(*events.borrow(), vec![("pick".to_string(), json!(1))]);
+}
+
+#[gpui::test]
+fn remote_editor_preserves_inflight_keystrokes_across_delayed_echoes(cx: &mut TestAppContext) {
+    cx.update(crate::input::bind);
+    let make_tree = |text: &str| -> Node {
+        serde_json::from_value(json!({
+            "kind": "code_editor",
+            "label": "Cell",
+            "value": text,
+            "language": "py",
+            "height": 64,
+            "handler": "cell"
+        }))
+        .unwrap()
+    };
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| {
+            cx.new(|_| {
+                VisualView::remote(
+                    "remote-typing-test".into(),
+                    "Remote typing".into(),
+                    make_tree(""),
+                    Rc::new(|_, _| {}),
+                )
+            })
+        })
+        .unwrap()
+    });
+    let visual = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+    visual.run_until_parked();
+    let bounds = visual.debug_bounds("visual-code-editor-root").unwrap();
+    visual.simulate_click(bounds.center(), Default::default());
+    visual.simulate_input("a");
+    visual.simulate_input("b");
+    visual.run_until_parked();
+    // Simulate a delayed echo from the first keystroke arriving after the second.
+    window
+        .update(visual, |view, _, cx| view.set_tree(make_tree("a"), cx))
+        .unwrap();
+    visual.run_until_parked();
+    window
+        .update(visual, |view, _, cx| {
+            let content = view.editors["root"].input.read(cx).content.to_string();
+            assert_eq!(content, "ab");
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn remote_right_margin_aligns_beside_centered_editor_and_forwards_selection(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::input::bind);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let on_event = {
+        let events = events.clone();
+        Rc::new(move |handler: &str, value: Value| {
+            events.borrow_mut().push((handler.to_string(), value));
+        })
+    };
+    let make_tree = |has_selection: bool| -> Node {
+        serde_json::from_value(json!({
+            "kind": "page_tabs",
+            "labels": ["Notebook", "Variables"],
+            "selected": 0,
+            "handler": "tab",
+            "nav_width": 180,
+            "right_margin": true,
+            "children": [
+                {
+                    "kind": "column",
+                    "gap": 20,
+                    "children": [
+                        {
+                            "kind": "row",
+                            "gap": 24,
+                            "children": [
+                                {
+                                    "kind": "column",
+                                    "gap": 8,
+                                    "children": [
+                                        {
+                                            "kind": "code_editor",
+                                            "label": "Block 1",
+                                            "value": "x = 2\ny = x * 10\ny",
+                                            "language": "py",
+                                            "height": 180,
+                                            "handler": "cell:1",
+                                            "submit_handler": "run:1",
+                                            "selection_handler": "select:1"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "kind": "column",
+                                    "gap": 6,
+                                    "width": 180,
+                                    "children": [
+                                        {
+                                            "kind": "button",
+                                            "label": "Run selection",
+                                            "handler": "run_sel:1",
+                                            "disabled": !has_selection
+                                        },
+                                        {
+                                            "kind": "button",
+                                            "label": "Run block",
+                                            "handler": "run:1",
+                                            "disabled": false
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap()
+    };
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| {
+            cx.new(|_| {
+                VisualView::remote(
+                    "remote-right-margin-test".into(),
+                    "Notebook".into(),
+                    make_tree(false),
+                    on_event,
+                )
+            })
+        })
+        .unwrap()
+    });
+    let visual = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_window_resize(window.into(), size(px(1300.), px(700.)));
+    visual.run_until_parked();
+
+    let layout = visual.debug_bounds("visual-page-layout-root").unwrap();
+    let editor = visual
+        .debug_bounds("visual-code-editor-root/0/0/0/0")
+        .unwrap();
+    let run_sel = visual.debug_bounds("visual-button-root/0/0/1/0").unwrap();
+    assert!(
+        (editor.size.width.as_f32() - 800.).abs() < 1.5,
+        "editor must keep the 800 px centered column width: {editor:?}"
+    );
+    assert!(
+        (editor.center().x - layout.center().x).as_f32().abs() < 1.5,
+        "editor must remain centered in the page layout: editor={editor:?} layout={layout:?}"
+    );
+    assert!(
+        run_sel.origin.x >= editor.right() + px(20.),
+        "controls must sit in the right margin: run_sel={run_sel:?} editor={editor:?}"
+    );
+    assert!(
+        (run_sel.origin.y - editor.origin.y).as_f32().abs() < 4.,
+        "controls must align with the top of the block: run_sel={run_sel:?} editor={editor:?}"
+    );
+
+    window
+        .update(visual, |view, _, cx| {
+            let input = view.editors["root/0/0/0/0"].input.clone();
+            input.update(cx, |input, cx| input.select_range(6..16, cx));
+        })
+        .unwrap();
+    visual.run_until_parked();
+    assert_eq!(
+        *events.borrow(),
+        vec![("select:1".to_string(), json!("y = x * 10"))]
+    );
+
+    // Republishing the tree to enable the button must preserve the active selection.
+    window
+        .update(visual, |view, _, cx| view.set_tree(make_tree(true), cx))
+        .unwrap();
+    visual.run_until_parked();
+    window
+        .update(visual, |view, _, cx| {
+            let selected = view.editors["root/0/0/0/0"].input.read(cx).selected_text();
+            assert_eq!(selected, "y = x * 10");
+        })
+        .unwrap();
+
+    let run_sel = visual.debug_bounds("visual-button-root/0/0/1/0").unwrap();
+    visual.simulate_click(run_sel.center(), Default::default());
+    visual.run_until_parked();
+    assert_eq!(
+        events.borrow().last(),
+        Some(&("run_sel:1".to_string(), Value::Null))
+    );
+}
+
+#[gpui::test]
+fn remote_three_column_layout_and_editor_context_menu_work(cx: &mut TestAppContext) {
+    cx.update(crate::input::bind);
+    cx.update(crate::popover::bind);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let on_event = {
+        let events = events.clone();
+        Rc::new(move |handler: &str, value: Value| {
+            events.borrow_mut().push((handler.to_string(), value));
+        })
+    };
+    let make_tree = |run_sel_handler: &str| -> Node {
+        serde_json::from_value(json!({
+            "kind": "row",
+            "gap": 18,
+            "children": [
+                {
+                    "kind": "column",
+                    "gap": 8,
+                    "weight": 0.95,
+                    "children": [
+                        {"kind": "table", "columns": ["Name", "Value"], "rows": [["x", "2"]]}
+                    ]
+                },
+                {
+                    "kind": "column",
+                    "gap": 8,
+                    "weight": 1.8,
+                    "children": [
+                        {
+                            "kind": "code_editor",
+                            "label": "Notebook",
+                            "value": "x = 2\ny = x * 10\ny",
+                            "language": "py",
+                            "height": 720,
+                            "handler": "edit",
+                            "selection_handler": "select",
+                            "context_menu": [
+                                {
+                                    "label": "Run selected",
+                                    "handler": run_sel_handler,
+                                    "requires_selection": true
+                                },
+                                {
+                                    "label": "Run all",
+                                    "handler": "run_all"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "kind": "column",
+                    "gap": 8,
+                    "weight": 1.25,
+                    "children": [
+                        {"kind": "button", "label": "Run all", "handler": "run_all", "disabled": false}
+                    ]
+                }
+            ]
+        }))
+        .unwrap()
+    };
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |_, cx| {
+            cx.new(|_| {
+                VisualView::remote(
+                    "remote-three-col-test".into(),
+                    "Notebook".into(),
+                    make_tree("run_sel_v1"),
+                    on_event,
+                )
+            })
+        })
+        .unwrap()
+    });
+    let visual = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_window_resize(window.into(), size(px(1200.), px(820.)));
+    visual.run_until_parked();
+
+    let table = visual.debug_bounds("visual-table-root/0/0").unwrap();
+    let editor = visual.debug_bounds("visual-code-editor-root/1/0").unwrap();
+    let run_btn = visual.debug_bounds("visual-button-root/2/0").unwrap();
+    assert!(
+        table.right() < editor.left() && editor.right() < run_btn.left(),
+        "all 3 columns must sit side-by-side: table={table:?} editor={editor:?} run_btn={run_btn:?}"
+    );
+    assert!(
+        editor.size.width > table.size.width,
+        "center code sheet must be wider than variables column: editor={editor:?} table={table:?}"
+    );
+
+    window
+        .update(visual, |view, _, cx| {
+            let input = view.editors["root/1/0"].input.clone();
+            input.update(cx, |input, cx| input.select_range(6..16, cx));
+        })
+        .unwrap();
+    visual.run_until_parked();
+
+    // Right-click inside the editor to open the native context menu.
+    visual.simulate_mouse_down(editor.center(), MouseButton::Right, Default::default());
+    visual.run_until_parked();
+
+    // Simulate a concurrent ui.set arriving while the menu is open (rewriting handler IDs).
+    window
+        .update(visual, |view, _, cx| view.set_tree(make_tree("run_sel_v2"), cx))
+        .unwrap();
+    visual.run_until_parked();
+
+    let menu_item = visual
+        .debug_bounds("menu-action-0")
+        .expect("context menu action should render");
+    visual.simulate_click(menu_item.center(), Default::default());
+    visual.run_until_parked();
+
+    assert_eq!(
+        events.borrow().last(),
+        Some(&("run_sel_v2".to_string(), json!("y = x * 10")))
     );
 }

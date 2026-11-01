@@ -6,12 +6,13 @@ use gpui::{
     fill, point, prelude::*, px, relative, size,
 };
 use monocode_core::visual::{
-    Camera, Node, SceneObject, Shape, TextSize, ThemeColor, VisualDocument, VisualRuntime,
+    Camera, ContextMenuItem, Node, SceneObject, Shape, TextSize, ThemeColor, VisualDocument,
+    VisualRuntime,
 };
 use serde_json::{Value, json};
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
     sync::{Arc, Mutex},
 };
@@ -43,6 +44,7 @@ pub(crate) struct VisualView {
     scene_drag: Option<(String, Point<Pixels>)>,
     inputs: HashMap<String, InputSlot>,
     editors: HashMap<String, CodeEditorSlot>,
+    editor_menu: Option<OpenEditorMenu>,
     active: HashSet<String>,
     revision: u64,
     scene_cache: HashMap<String, Rc<RefCell<Option<SceneCache>>>>,
@@ -62,17 +64,36 @@ struct SliderDrag {
 struct InputSlot {
     input: gpui::Entity<crate::input::Input>,
     handler: String,
+    submit_handler: Option<String>,
     source_value: String,
-    _subscription: gpui::Subscription,
+    last_remote: String,
+    pending: VecDeque<String>,
+    _subscriptions: Vec<gpui::Subscription>,
 }
 struct CodeEditorSlot {
     input: gpui::Entity<crate::input::Input>,
     handler: String,
+    submit_handler: Option<String>,
+    selection_handler: Option<String>,
+    context_menu: Vec<ContextMenuItem>,
     source_value: String,
+    last_remote: String,
+    last_selection: String,
+    pending: VecDeque<String>,
+    height: f32,
+    read_only: bool,
     path: String,
     syntax: Option<Arc<Mutex<Option<crate::editor_syntax::Session>>>>,
     _analysis: Option<Task<()>>,
-    _subscription: gpui::Subscription,
+    _subscriptions: Vec<gpui::Subscription>,
+}
+struct OpenEditorMenu {
+    editor_key: String,
+    anchor: Point<Pixels>,
+    selected_text: String,
+    fallback_handlers: Vec<String>,
+    menu: gpui::Entity<crate::popover::Menu>,
+    _events: gpui::Subscription,
 }
 struct SceneCache {
     revision: u64,
@@ -194,6 +215,7 @@ impl VisualView {
             scene_drag: None,
             inputs: HashMap::new(),
             editors: HashMap::new(),
+            editor_menu: None,
             active: HashSet::new(),
             revision: 0,
             scene_cache: HashMap::new(),
@@ -223,6 +245,7 @@ impl VisualView {
             scene_drag: None,
             inputs: HashMap::new(),
             editors: HashMap::new(),
+            editor_menu: None,
             active: HashSet::new(),
             revision: 0,
             scene_cache: HashMap::new(),
@@ -268,6 +291,17 @@ impl VisualView {
         cx.notify();
     }
     fn dispatch(&mut self, handler: &str, value: Value, cx: &mut Context<Self>) {
+        if self.remote.is_some() {
+            for slot in self.inputs.values_mut() {
+                slot.pending.clear();
+            }
+            for slot in self.editors.values_mut() {
+                slot.pending.clear();
+            }
+        }
+        self.dispatch_raw(handler, value, cx);
+    }
+    fn dispatch_raw(&mut self, handler: &str, value: Value, cx: &mut Context<Self>) {
         if let Some(remote) = self.remote.clone() {
             remote(handler, value);
             return;
@@ -307,17 +341,116 @@ impl VisualView {
             }
         }
         for (key, slot) in &mut self.inputs {
-            if let Some(Node::Input { handler, .. }) = node_at(&tree, key) {
+            if let Some(Node::Input {
+                handler,
+                submit_handler,
+                ..
+            }) = node_at(&tree, key)
+            {
                 slot.handler = handler.clone();
+                slot.submit_handler = submit_handler.clone();
             }
         }
         for (key, slot) in &mut self.editors {
-            if let Some(Node::CodeEditor { handler, .. }) = node_at(&tree, key) {
+            if let Some(Node::CodeEditor {
+                handler,
+                submit_handler,
+                selection_handler,
+                context_menu,
+                ..
+            }) = node_at(&tree, key)
+            {
                 slot.handler = handler.clone();
+                slot.submit_handler = submit_handler.clone();
+                slot.selection_handler = selection_handler.clone();
+                slot.context_menu = context_menu.clone();
             }
         }
         self.tree = Some(tree);
         self.error = None;
+    }
+    fn open_editor_menu(
+        &mut self,
+        key: &str,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(slot) = self.editors.get(key) else {
+            return;
+        };
+        if slot.context_menu.is_empty() {
+            return;
+        }
+        let selected_text = slot.input.read(cx).selected_text();
+        let has_selection = !selected_text.trim().is_empty();
+        let mut items: Vec<crate::popover::MenuItem> = Vec::with_capacity(slot.context_menu.len());
+        let mut fallback_handlers = Vec::with_capacity(slot.context_menu.len());
+        for (idx, item) in slot.context_menu.iter().enumerate() {
+            let disabled = item.disabled || (item.requires_selection && !has_selection);
+            items.push(
+                crate::popover::MenuAction::new(format!("{idx}"), item.label.clone())
+                    .disabled(disabled)
+                    .into(),
+            );
+            fallback_handlers.push(item.handler.clone());
+        }
+        self.editor_menu = None;
+        let menu =
+            cx.new(|cx| crate::popover::Menu::new("Editor actions", items, window, cx).width(196.));
+        let events = cx.subscribe_in(
+            &menu,
+            window,
+            |this, _, event: &crate::popover::MenuEvent, _, cx| {
+                let Some(open) = this.editor_menu.take() else {
+                    return;
+                };
+                if let crate::popover::MenuEvent::Picked(id, _) = event
+                    && let Ok(index) = id.parse::<usize>()
+                {
+                    let live_handler = this
+                        .editors
+                        .get(&open.editor_key)
+                        .and_then(|slot| slot.context_menu.get(index))
+                        .map(|item| item.handler.clone())
+                        .or_else(|| open.fallback_handlers.get(index).cloned());
+                    if let Some(handler) = live_handler {
+                        let payload = if open.selected_text.is_empty() {
+                            Value::Null
+                        } else {
+                            json!(open.selected_text)
+                        };
+                        this.dispatch(&handler, payload, cx);
+                    }
+                }
+                cx.notify();
+            },
+        );
+        self.editor_menu = Some(OpenEditorMenu {
+            editor_key: key.to_owned(),
+            anchor: at,
+            selected_text,
+            fallback_handlers,
+            menu,
+            _events: events,
+        });
+        cx.notify();
+    }
+    fn sync_editor_selection(&mut self, key: &str, cx: &mut Context<Self>) {
+        let next = {
+            let Some(slot) = self.editors.get_mut(key) else {
+                return;
+            };
+            let selected = slot.input.read(cx).selected_text();
+            if selected == slot.last_selection {
+                return;
+            }
+            slot.last_selection = selected.clone();
+            slot.selection_handler.clone().map(|h| (h, selected))
+        };
+        if let Some((handler, selected)) = next {
+            self.dispatch_raw(&handler, json!(selected), cx);
+        }
     }
     fn slide(&mut self, x: Pixels, cx: &mut Context<Self>) {
         let Some(drag) = &self.slider_drag else {
@@ -361,45 +494,16 @@ impl VisualView {
     fn node(&mut self, node: &Node, key: String, cx: &mut Context<Self>) -> AnyElement {
         self.active.insert(key.clone());
         match node {
-            Node::Column { children, gap }
-            | Node::Row { children, gap }
-            | Node::Grid { children, gap, .. }
-            | Node::Card { children, gap } => {
-                let mut layout = div().w_full().min_w_0().gap(px(*gap));
-                if matches!(node, Node::Card { .. }) {
-                    layout = layout
-                        .p_4()
-                        .rounded_xl()
-                        .bg(content(0.03))
-                        .border_1()
-                        .border_color(content(0.08));
-                }
-                if let Node::Grid { columns, .. } = node {
-                    let responsive =
-                        ((*columns).min((self.width.get() / 180.).floor().max(1.) as usize)).max(1);
-                    layout = layout.grid().grid_cols(responsive as u16);
-                } else if matches!(node, Node::Row { .. }) {
-                    layout = layout.flex().flex_wrap().items_start();
-                } else {
-                    layout = layout.flex().flex_col();
-                }
-                for (i, child) in children.iter().enumerate() {
-                    let element = self.node(child, format!("{key}/{i}"), cx);
-                    layout = layout.child(
-                        div()
-                            .min_w_0()
-                            .when(matches!(node, Node::Row { .. }), |d| {
-                                d.flex_1().min_w(px(120.))
-                            })
-                            .child(element),
-                    );
-                }
-                layout.into_any_element()
-            }
+            Node::Spacer => div().h(px(4.)).into_any_element(),
+            Node::Column { .. }
+            | Node::Row { .. }
+            | Node::Grid { .. }
+            | Node::Card { .. } => self.render_layout(node, key, cx),
             Node::Text {
                 text,
                 size,
                 color: token,
+                monospace,
             } => {
                 let font_size = match size {
                     TextSize::Caption => 11.,
@@ -414,6 +518,7 @@ impl VisualView {
                     .text_size(px(font_size))
                     .line_height(px(font_size * 1.45))
                     .text_color(color(token))
+                    .when(*monospace, |d| d.font_family(crate::fonts::mono()))
                     .when(
                         matches!(size, TextSize::Subtitle | TextSize::Title | TextSize::Hero),
                         |d| d.font_weight(FontWeight::SEMIBOLD),
@@ -497,51 +602,7 @@ impl VisualView {
                     })
                     .into_any_element()
             }
-            Node::Table {
-                columns,
-                rows,
-                weights,
-            } => {
-                let mut table = div()
-                    .id(SharedString::from(format!("visual-table-{key}")))
-                    .w_full()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .text_size(px(12.));
-                let fallback = 1.;
-                let weights = (0..columns.len())
-                    .map(|index| weights.get(index).copied().unwrap_or(fallback))
-                    .collect::<Vec<_>>();
-                let row = |cells: &[String], header: bool| {
-                    div()
-                        .w_full()
-                        .min_w_0()
-                        .flex()
-                        .border_b_1()
-                        .border_color(content(0.08))
-                        .when(header, |d| {
-                            d.font_weight(FontWeight::SEMIBOLD)
-                                .text_color(content(0.65))
-                        })
-                        .children(cells.iter().enumerate().map(|(index, cell)| {
-                            div()
-                                .min_w_0()
-                                .flex_grow(weights[index])
-                                .flex_shrink(1.)
-                                .flex_basis(px(0.))
-                                .overflow_hidden()
-                                .px(px(8.))
-                                .py(px(5.))
-                                .child(div().min_w_0().truncate().child(cell.clone()))
-                        }))
-                };
-                table = table.child(row(columns, true));
-                for cells in rows {
-                    table = table.child(row(cells, false));
-                }
-                table.into_any_element()
-            }
+            Node::Table { .. } => self.render_table(node, key, cx),
             Node::Button {
                 label,
                 handler,
@@ -627,114 +688,7 @@ impl VisualView {
                     }))
                     .into_any_element()
             }
-            Node::Slider {
-                label,
-                value,
-                min,
-                max,
-                step,
-                handler,
-            } => {
-                let fraction =
-                    ((*value - *min) / (*max - *min).max(f64::EPSILON)).clamp(0., 1.) as f32;
-                let bounds = self
-                    .tracks
-                    .entry(key.clone())
-                    .or_insert_with(|| Rc::new(Cell::new(None)))
-                    .clone();
-                let min = *min;
-                let max = *max;
-                let step = *step;
-                let current = *value;
-                let handler = handler.clone();
-                let keyboard = handler.clone();
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .min_w(px(120.))
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .gap_3()
-                            .text_size(px(12.))
-                            .child(label.clone())
-                            .child(format_number(*value)),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("visual-slider-{key}")))
-                            .debug_selector({
-                                let key = key.clone();
-                                move || format!("visual-slider-{key}")
-                            })
-                            .role(Role::Slider)
-                            .aria_label(label.clone())
-                            .focusable()
-                            .tab_stop(true)
-                            .w_full()
-                            .h(px(20.))
-                            .flex()
-                            .items_center()
-                            .relative()
-                            .cursor_pointer()
-                            .child(
-                                canvas(move |rect, _, _| bounds.set(Some(rect)), |_, _, _, _| {})
-                                    .absolute()
-                                    .size_full(),
-                            )
-                            .child(div().w_full().h(px(4.)).rounded_full().bg(content(0.12)))
-                            .child(
-                                div()
-                                    .absolute()
-                                    .left_0()
-                                    .top(px(8.))
-                                    .h(px(4.))
-                                    .w(relative(fraction))
-                                    .rounded_full()
-                                    .bg(accent_color()),
-                            )
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top(px(4.))
-                                    .left(relative(fraction))
-                                    .ml(px(-6.))
-                                    .size(px(12.))
-                                    .rounded_full()
-                                    .bg(accent_color()),
-                            )
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
-                                    this.slider_drag = Some(SliderDrag {
-                                        key: key.clone(),
-                                        handler: handler.clone(),
-                                        min,
-                                        max,
-                                        step,
-                                    });
-                                    this.slide(event.position.x, cx);
-                                    cx.stop_propagation();
-                                }),
-                            )
-                            .on_key_down(cx.listener(
-                                move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                    let next = match event.keystroke.key.as_str() {
-                                        "left" | "down" => current - step,
-                                        "right" | "up" => current + step,
-                                        "home" => min,
-                                        "end" => max,
-                                        _ => return,
-                                    };
-                                    this.dispatch(&keyboard, json!(next.clamp(min, max)), cx);
-                                    cx.stop_propagation();
-                                },
-                            )),
-                    )
-                    .into_any_element()
-            }
+            Node::Slider { .. } => self.render_slider(node, key, cx),
             Node::Tabs {
                 labels,
                 selected,
@@ -776,280 +730,9 @@ impl VisualView {
                 }
                 tabs.into_any_element()
             }
-            Node::PageTabs {
-                labels,
-                selected,
-                handler,
-                nav_width,
-                children,
-            } => {
-                // Keep the rail usable in narrow windows without letting it
-                // take over the page content.
-                let rail_width = (*nav_width)
-                    .min((self.width.get() * 0.32).max(140.))
-                    .max(140.);
-                let mut rail = div()
-                    .id(SharedString::from(format!("visual-page-tabs-{key}")))
-                    .role(Role::TabList)
-                    .w(px(rail_width))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.))
-                    .pt(px(1.));
-                for (i, label) in labels.iter().enumerate() {
-                    let active = i == *selected;
-                    let handler = handler.clone();
-                    let keyboard = handler.clone();
-                    rail = rail.child(
-                        div()
-                            .id(SharedString::from(format!("visual-page-tab-{key}-{i}")))
-                            .debug_selector({
-                                let key = key.clone();
-                                move || format!("visual-page-tab-{key}-{i}")
-                            })
-                            .role(Role::Tab)
-                            .focusable()
-                            .tab_stop(true)
-                            .aria_label(label.clone())
-                            .aria_selected(active)
-                            .h(px(30.))
-                            .px(px(10.))
-                            .flex()
-                            .items_center()
-                            .border_l_2()
-                            .border_color(if active {
-                                accent_color()
-                            } else {
-                                gpui::transparent_black()
-                            })
-                            .text_size(px(13.))
-                            .line_height(px(18.))
-                            .text_color(if active { content(1.) } else { content(0.55) })
-                            .when(active, |d| d.font_weight(FontWeight::MEDIUM))
-                            .cursor_pointer()
-                            .hover(|s| s.text_color(content(1.)))
-                            .focus_visible(|s| s.bg(content(0.05)))
-                            .child(label.clone())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.dispatch(&handler, json!(i), cx)
-                            }))
-                            .on_key_down(cx.listener(move |this, event, _, cx| {
-                                if activated(event) {
-                                    this.dispatch(&keyboard, json!(i), cx);
-                                    cx.stop_propagation();
-                                }
-                            })),
-                    );
-                }
-                let content = children
-                    .first()
-                    .map(|child| self.node(child, format!("{key}/0"), cx))
-                    .unwrap_or_else(|| div().into_any_element());
-                // Center the reading column. The matching spacer on the right
-                // makes the column itself centered while the TOC sits beside it.
-                let gap = 24.;
-                let group_width = (rail_width * 2.) + (gap * 2.) + PAGE_CONTENT_MAX_WIDTH;
-                div()
-                    .w_full()
-                    .min_w_0()
-                    .flex()
-                    .justify_center()
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("visual-page-layout-{key}")))
-                            .debug_selector({
-                                let key = key.clone();
-                                move || format!("visual-page-layout-{key}")
-                            })
-                            .w_full()
-                            .min_w_0()
-                            .max_w(px(group_width))
-                            .flex()
-                            .items_start()
-                            .gap(px(gap))
-                            .child(rail)
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!("visual-page-panel-{key}")))
-                                    .debug_selector({
-                                        let key = key.clone();
-                                        move || format!("visual-page-panel-{key}")
-                                    })
-                                    .role(Role::TabPanel)
-                                    .flex_1()
-                                    .min_w_0()
-                                    .max_w(px(PAGE_CONTENT_MAX_WIDTH))
-                                    .child(content),
-                            )
-                            .child(div().w(px(rail_width)).flex_none()),
-                    )
-                    .into_any_element()
-            }
-            Node::Input {
-                label,
-                value,
-                placeholder,
-                handler,
-            } => {
-                if !self.inputs.contains_key(&key) {
-                    let input = cx.new(|cx| {
-                        let mut input = crate::input::Input::field(
-                            label.clone(),
-                            placeholder.clone().unwrap_or_default(),
-                            content(0.4),
-                            cx,
-                        );
-                        input.set_max_chars(4096);
-                        input.set_text(value.clone(), cx);
-                        input
-                    });
-                    let changed_key = key.clone();
-                    let subscription =
-                        cx.subscribe(&input, move |this, input, _: &crate::input::Changed, cx| {
-                            let value = input.read(cx).content.to_string();
-                            let Some(slot) = this.inputs.get_mut(&changed_key) else {
-                                return;
-                            };
-                            if value == slot.source_value {
-                                return;
-                            }
-                            slot.source_value = value.clone();
-                            let handler = slot.handler.clone();
-                            this.dispatch(&handler, json!(value), cx);
-                        });
-                    self.inputs.insert(
-                        key.clone(),
-                        InputSlot {
-                            input,
-                            handler: handler.clone(),
-                            source_value: value.clone(),
-                            _subscription: subscription,
-                        },
-                    );
-                }
-                let slot = self.inputs.get_mut(&key).unwrap();
-                slot.handler = handler.clone();
-                slot.source_value = value.clone();
-                if slot.input.read(cx).content.as_ref() != value {
-                    slot.input
-                        .update(cx, |input, cx| input.set_text(value.clone(), cx));
-                }
-                // The placeholder says what to type; the label stays for
-                // assistive technology only.
-                div()
-                    .id(SharedString::from(format!("visual-input-{key}")))
-                    .debug_selector({
-                        let key = key.clone();
-                        move || format!("visual-input-{key}")
-                    })
-                    .aria_label(label.clone())
-                    .min_w_0()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(content(0.14))
-                    .child(slot.input.clone())
-                    .into_any_element()
-            }
-            Node::CodeEditor {
-                label,
-                value,
-                language,
-                height,
-                handler,
-                read_only,
-            } => {
-                if !self.editors.contains_key(&key) {
-                    let path = editor_path(language);
-                    let syntax =
-                        crate::editor_syntax::supports(&path).then(|| Arc::new(Mutex::new(None)));
-                    let input = cx.new(|cx| {
-                        let mut input = crate::input::Input::editor(cx);
-                        input.set_editor_path(path.clone());
-                        input.set_max_chars(64 * 1024);
-                        input.set_read_only(*read_only);
-                        input.set_min_height(*height - 2.);
-                        input.set_max_height(*height - 2.);
-                        input.set_text(value.clone(), cx);
-                        input
-                    });
-                    let changed_key = key.clone();
-                    let subscription =
-                        cx.subscribe(&input, move |this, input, _: &crate::input::Changed, cx| {
-                            let value = input.read(cx).content.to_string();
-                            let handler = {
-                                let Some(slot) = this.editors.get_mut(&changed_key) else {
-                                    return;
-                                };
-                                if value == slot.source_value {
-                                    return;
-                                }
-                                slot.source_value = value.clone();
-                                slot.handler.clone()
-                            };
-                            this.dispatch(&handler, json!(value.clone()), cx);
-                            this.analyze_editor(&changed_key, value, cx);
-                        });
-                    self.editors.insert(
-                        key.clone(),
-                        CodeEditorSlot {
-                            input: input.clone(),
-                            handler: handler.clone(),
-                            source_value: value.clone(),
-                            path: path.clone(),
-                            syntax,
-                            _analysis: None,
-                            _subscription: subscription,
-                        },
-                    );
-                    self.analyze_editor(&key, value.clone(), cx);
-                }
-                let mut changed = false;
-                let new_path = editor_path(language);
-                {
-                    let Some(slot) = self.editors.get_mut(&key) else {
-                        return div().into_any_element();
-                    };
-                    slot.handler = handler.clone();
-                    slot.source_value = value.clone();
-                    if slot.path != new_path {
-                        slot.path = new_path.clone();
-                        slot.syntax = crate::editor_syntax::supports(&new_path)
-                            .then(|| Arc::new(Mutex::new(None)));
-                        slot.input
-                            .update(cx, |input, _| input.set_editor_path(new_path.clone()));
-                        changed = true;
-                    }
-                    if slot.input.read(cx).content.as_ref() != value {
-                        slot.input
-                            .update(cx, |input, cx| input.set_text(value.clone(), cx));
-                        changed = true;
-                    }
-                }
-                if changed {
-                    self.analyze_editor(&key, value.clone(), cx);
-                }
-                let input = self.editors[&key].input.clone();
-                div()
-                    .id(SharedString::from(format!("visual-code-editor-{key}")))
-                    .debug_selector({
-                        let key = key.clone();
-                        move || format!("visual-code-editor-{key}")
-                    })
-                    .role(Role::Group)
-                    .aria_label(label.clone())
-                    .w_full()
-                    .min_w_0()
-                    .h(px(*height))
-                    .overflow_hidden()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(content(0.14))
-                    .child(input)
-                    .into_any_element()
-            }
+            Node::PageTabs { .. } => self.render_page_tabs(node, key, cx),
+            Node::Input { .. } => self.render_input(node, key, cx),
+            Node::CodeEditor { .. } => self.render_code_editor(node, key, cx),
             Node::Select {
                 label,
                 options,
@@ -1173,6 +856,721 @@ impl VisualView {
                 camera,
             } => self.scene(key, *height, objects.clone(), camera.clone(), cx),
         }
+    }
+    #[inline(never)]
+    fn render_layout(&mut self, node: &Node, key: String, cx: &mut Context<Self>) -> AnyElement {
+        let (children, gap, column_width) = match node {
+            Node::Column {
+                children,
+                gap,
+                width,
+                ..
+            } => (children, *gap, *width),
+            Node::Row { children, gap }
+            | Node::Grid { children, gap, .. }
+            | Node::Card { children, gap } => (children, *gap, None),
+            _ => return div().into_any_element(),
+        };
+        let mut layout = div().min_w_0().gap(px(gap));
+        if let Some(w) = column_width {
+            layout = layout.w(px(w)).flex_none();
+        } else {
+            layout = layout.w_full();
+        }
+        if matches!(node, Node::Card { .. }) {
+            layout = layout
+                .p_4()
+                .rounded_xl()
+                .bg(content(0.03))
+                .border_1()
+                .border_color(content(0.08));
+        }
+        let is_row = matches!(node, Node::Row { .. });
+        if let Node::Grid { columns, .. } = node {
+            let responsive =
+                ((*columns).min((self.width.get() / 180.).floor().max(1.) as usize)).max(1);
+            layout = layout.grid().grid_cols(responsive as u16);
+        } else if is_row {
+            let inline_only = children.iter().all(|child| {
+                matches!(
+                    child,
+                    Node::Button { .. }
+                        | Node::Toggle { .. }
+                        | Node::Input { .. }
+                        | Node::Select { .. }
+                        | Node::Tabs { .. }
+                        | Node::Text { .. }
+                        | Node::Spacer
+                )
+            });
+            layout = layout.flex().flex_wrap();
+            layout = if inline_only {
+                layout.items_center()
+            } else {
+                layout.items_start()
+            };
+        } else {
+            layout = layout.flex().flex_col();
+        }
+        for (i, child) in children.iter().enumerate() {
+            if is_row && matches!(child, Node::Spacer) {
+                self.active.insert(format!("{key}/{i}"));
+                layout = layout.child(div().flex_1().min_w_0());
+                continue;
+            }
+            let element = self.node(child, format!("{key}/{i}"), cx);
+            let wrapper = if is_row {
+                match child {
+                    Node::Column {
+                        width: Some(w), ..
+                    } => div().w(px(*w)).flex_none().child(element),
+                    Node::Column {
+                        weight: Some(weight),
+                        ..
+                    } => div()
+                        .min_w_0()
+                        .flex_grow(*weight)
+                        .flex_shrink(1.)
+                        .flex_basis(px(0.))
+                        .min_w(px(180.))
+                        .child(element),
+                    Node::Button { .. }
+                    | Node::Toggle { .. }
+                    | Node::Select { .. }
+                    | Node::Tabs { .. } => div().flex_none().child(element),
+                    Node::Text { .. } => div().min_w_0().child(element),
+                    _ => div().min_w_0().flex_1().min_w(px(120.)).child(element),
+                }
+            } else {
+                div().min_w_0().child(element)
+            };
+            layout = layout.child(wrapper);
+        }
+        layout.into_any_element()
+    }
+    #[inline(never)]
+    fn render_table(&mut self, node: &Node, key: String, cx: &mut Context<Self>) -> AnyElement {
+        let Node::Table {
+            columns,
+            rows,
+            weights,
+            handler,
+            selected,
+        } = node
+        else {
+            return div().into_any_element();
+        };
+        let mut table = div()
+            .id(SharedString::from(format!("visual-table-{key}")))
+            .debug_selector({
+                let key = key.clone();
+                move || format!("visual-table-{key}")
+            })
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .text_size(px(12.))
+            .font_features(crate::right_panel::tabular());
+        let fallback = 1.;
+        let weights = (0..columns.len())
+            .map(|index| weights.get(index).copied().unwrap_or(fallback))
+            .collect::<Vec<_>>();
+        let render_cells = |cells: &[String]| {
+            cells
+                .iter()
+                .enumerate()
+                .map(|(index, cell)| {
+                    div()
+                        .min_w_0()
+                        .flex_grow(weights[index])
+                        .flex_shrink(1.)
+                        .flex_basis(px(0.))
+                        .overflow_hidden()
+                        .px(px(8.))
+                        .py(px(5.))
+                        .child(div().min_w_0().truncate().child(cell.clone()))
+                })
+                .collect::<Vec<_>>()
+        };
+        table = table.child(
+            div()
+                .w_full()
+                .min_w_0()
+                .flex()
+                .border_b_1()
+                .border_color(content(0.1))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(content(0.65))
+                .children(render_cells(columns)),
+        );
+        for (row_index, cells) in rows.iter().enumerate() {
+            let is_selected = *selected == Some(row_index);
+            if let Some(handler) = handler.clone() {
+                let keyboard = handler.clone();
+                let row_id = format!("visual-table-row-{key}-{row_index}");
+                let selector_id = row_id.clone();
+                let label = cells.join(" ");
+                table = table.child(
+                    div()
+                        .id(SharedString::from(row_id))
+                        .debug_selector(move || selector_id.clone())
+                        .role(Role::Button)
+                        .aria_label(label)
+                        .focusable()
+                        .tab_stop(true)
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .border_b_1()
+                        .border_color(content(0.08))
+                        .cursor_pointer()
+                        .when(is_selected, |d| d.bg(content(0.08)))
+                        .hover(move |s| s.bg(content(if is_selected { 0.1 } else { 0.05 })))
+                        .focus_visible(|s| s.bg(content(0.06)))
+                        .children(render_cells(cells))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.dispatch(&handler, json!(row_index), cx)
+                        }))
+                        .on_key_down(cx.listener(move |this, event, _, cx| {
+                            if activated(event) {
+                                this.dispatch(&keyboard, json!(row_index), cx);
+                                cx.stop_propagation();
+                            }
+                        })),
+                );
+            } else {
+                table = table.child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .border_b_1()
+                        .border_color(content(0.08))
+                        .when(is_selected, |d| d.bg(content(0.08)))
+                        .children(render_cells(cells)),
+                );
+            }
+        }
+        table.into_any_element()
+    }
+    #[inline(never)]
+    fn render_slider(&mut self, node: &Node, key: String, cx: &mut Context<Self>) -> AnyElement {
+        let Node::Slider {
+            label,
+            value,
+            min,
+            max,
+            step,
+            handler,
+        } = node
+        else {
+            return div().into_any_element();
+        };
+        let fraction = ((*value - *min) / (*max - *min).max(f64::EPSILON)).clamp(0., 1.) as f32;
+        let bounds = self
+            .tracks
+            .entry(key.clone())
+            .or_insert_with(|| Rc::new(Cell::new(None)))
+            .clone();
+        let min = *min;
+        let max = *max;
+        let step = *step;
+        let current = *value;
+        let handler = handler.clone();
+        let keyboard = handler.clone();
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .min_w(px(120.))
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .gap_3()
+                    .text_size(px(12.))
+                    .child(label.clone())
+                    .child(format_number(*value)),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!("visual-slider-{key}")))
+                    .debug_selector({
+                        let key = key.clone();
+                        move || format!("visual-slider-{key}")
+                    })
+                    .role(Role::Slider)
+                    .aria_label(label.clone())
+                    .focusable()
+                    .tab_stop(true)
+                    .w_full()
+                    .h(px(20.))
+                    .flex()
+                    .items_center()
+                    .relative()
+                    .cursor_pointer()
+                    .child(
+                        canvas(move |rect, _, _| bounds.set(Some(rect)), |_, _, _, _| {})
+                            .absolute()
+                            .size_full(),
+                    )
+                    .child(div().w_full().h(px(4.)).rounded_full().bg(content(0.12)))
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top(px(8.))
+                            .h(px(4.))
+                            .w(relative(fraction))
+                            .rounded_full()
+                            .bg(accent_color()),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(4.))
+                            .left(relative(fraction))
+                            .ml(px(-6.))
+                            .size(px(12.))
+                            .rounded_full()
+                            .bg(accent_color()),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            this.slider_drag = Some(SliderDrag {
+                                key: key.clone(),
+                                handler: handler.clone(),
+                                min,
+                                max,
+                                step,
+                            });
+                            this.slide(event.position.x, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .on_key_down(
+                        cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                            let next = match event.keystroke.key.as_str() {
+                                "left" | "down" => current - step,
+                                "right" | "up" => current + step,
+                                "home" => min,
+                                "end" => max,
+                                _ => return,
+                            };
+                            this.dispatch(&keyboard, json!(next.clamp(min, max)), cx);
+                            cx.stop_propagation();
+                        }),
+                    ),
+            )
+            .into_any_element()
+    }
+    #[inline(never)]
+    fn render_page_tabs(&mut self, node: &Node, key: String, cx: &mut Context<Self>) -> AnyElement {
+        let Node::PageTabs {
+            labels,
+            selected,
+            handler,
+            nav_width,
+            right_margin,
+            children,
+        } = node
+        else {
+            return div().into_any_element();
+        };
+        // Keep the rail usable in narrow windows without letting it
+        // take over the page content.
+        let rail_width = (*nav_width)
+            .min((self.width.get() * 0.32).max(140.))
+            .max(140.);
+        let mut rail = div()
+            .id(SharedString::from(format!("visual-page-tabs-{key}")))
+            .role(Role::TabList)
+            .w(px(rail_width))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap(px(1.))
+            .pt(px(1.));
+        for (i, label) in labels.iter().enumerate() {
+            let active = i == *selected;
+            let handler = handler.clone();
+            let keyboard = handler.clone();
+            rail = rail.child(
+                div()
+                    .id(SharedString::from(format!("visual-page-tab-{key}-{i}")))
+                    .debug_selector({
+                        let key = key.clone();
+                        move || format!("visual-page-tab-{key}-{i}")
+                    })
+                    .role(Role::Tab)
+                    .focusable()
+                    .tab_stop(true)
+                    .aria_label(label.clone())
+                    .aria_selected(active)
+                    .h(px(30.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .border_l_2()
+                    .border_color(if active {
+                        accent_color()
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .text_size(px(13.))
+                    .line_height(px(18.))
+                    .text_color(if active { content(1.) } else { content(0.55) })
+                    .when(active, |d| d.font_weight(FontWeight::MEDIUM))
+                    .cursor_pointer()
+                    .hover(|s| s.text_color(content(1.)))
+                    .focus_visible(|s| s.bg(content(0.05)))
+                    .child(label.clone())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.dispatch(&handler, json!(i), cx)
+                    }))
+                    .on_key_down(cx.listener(move |this, event, _, cx| {
+                        if activated(event) {
+                            this.dispatch(&keyboard, json!(i), cx);
+                            cx.stop_propagation();
+                        }
+                    })),
+            );
+        }
+        let content = children
+            .first()
+            .map(|child| self.node(child, format!("{key}/0"), cx))
+            .unwrap_or_else(|| div().into_any_element());
+        // Center the reading column. The matching spacer on the right
+        // makes the column itself centered while the TOC sits beside it.
+        let gap = 24.;
+        let group_width = (rail_width * 2.) + (gap * 2.) + PAGE_CONTENT_MAX_WIDTH;
+        let panel_max_width = if *right_margin {
+            PAGE_CONTENT_MAX_WIDTH + gap + rail_width
+        } else {
+            PAGE_CONTENT_MAX_WIDTH
+        };
+        let mut page_layout = div()
+            .id(SharedString::from(format!("visual-page-layout-{key}")))
+            .debug_selector({
+                let key = key.clone();
+                move || format!("visual-page-layout-{key}")
+            })
+            .w_full()
+            .min_w_0()
+            .max_w(px(group_width))
+            .flex()
+            .items_start()
+            .gap(px(gap))
+            .child(rail)
+            .child(
+                div()
+                    .id(SharedString::from(format!("visual-page-panel-{key}")))
+                    .debug_selector({
+                        let key = key.clone();
+                        move || format!("visual-page-panel-{key}")
+                    })
+                    .role(Role::TabPanel)
+                    .flex_1()
+                    .min_w_0()
+                    .max_w(px(panel_max_width))
+                    .child(content),
+            );
+        if !*right_margin {
+            page_layout = page_layout.child(div().w(px(rail_width)).flex_none());
+        }
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .justify_center()
+            .child(page_layout)
+            .into_any_element()
+    }
+    #[inline(never)]
+    fn render_input(&mut self, node: &Node, key: String, cx: &mut Context<Self>) -> AnyElement {
+        let Node::Input {
+            label,
+            value,
+            placeholder,
+            handler,
+            submit_handler,
+        } = node
+        else {
+            return div().into_any_element();
+        };
+        let placeholder_text = placeholder.clone().unwrap_or_default();
+        if !self.inputs.contains_key(&key) {
+            let input = cx.new(|cx| {
+                let mut input = crate::input::Input::field(
+                    label.clone(),
+                    placeholder_text.clone(),
+                    content(0.4),
+                    cx,
+                );
+                input.set_font_size(12.5);
+                input.set_max_chars(4096);
+                input.set_text(value.clone(), cx);
+                input
+            });
+            let changed_key = key.clone();
+            let changed_sub =
+                cx.subscribe(&input, move |this, input, _: &crate::input::Changed, cx| {
+                    let value = input.read(cx).content.to_string();
+                    let is_remote = this.remote.is_some();
+                    let Some(slot) = this.inputs.get_mut(&changed_key) else {
+                        return;
+                    };
+                    if value == slot.source_value {
+                        return;
+                    }
+                    slot.source_value = value.clone();
+                    if is_remote {
+                        if slot.pending.len() >= 64 {
+                            slot.pending.pop_front();
+                        }
+                        slot.pending.push_back(value.clone());
+                    }
+                    let handler = slot.handler.clone();
+                    this.dispatch_raw(&handler, json!(value), cx);
+                });
+            let submit_key = key.clone();
+            let submit_sub = cx.subscribe(
+                &input,
+                move |this, _, _: &crate::input::Submitted, cx| {
+                    let Some(handler) = this
+                        .inputs
+                        .get(&submit_key)
+                        .and_then(|slot| slot.submit_handler.clone())
+                    else {
+                        return;
+                    };
+                    this.dispatch(&handler, Value::Null, cx);
+                },
+            );
+            self.inputs.insert(
+                key.clone(),
+                InputSlot {
+                    input,
+                    handler: handler.clone(),
+                    submit_handler: submit_handler.clone(),
+                    source_value: value.clone(),
+                    last_remote: value.clone(),
+                    pending: VecDeque::new(),
+                    _subscriptions: vec![changed_sub, submit_sub],
+                },
+            );
+        }
+        let slot = self.inputs.get_mut(&key).unwrap();
+        slot.handler = handler.clone();
+        slot.submit_handler = submit_handler.clone();
+        slot.input
+            .update(cx, |input, cx| input.set_placeholder(placeholder_text, cx));
+        let current = slot.input.read(cx).content.to_string();
+        if accept_remote_text(&mut slot.pending, &mut slot.last_remote, &current, value) {
+            slot.source_value = value.clone();
+            slot.input
+                .update(cx, |input, cx| input.set_text(value.clone(), cx));
+        }
+        // The placeholder says what to type; the label stays for
+        // assistive technology only.
+        div()
+            .id(SharedString::from(format!("visual-input-{key}")))
+            .debug_selector({
+                let key = key.clone();
+                move || format!("visual-input-{key}")
+            })
+            .aria_label(label.clone())
+            .min_w_0()
+            .h(px(26.))
+            .px_2()
+            .flex()
+            .items_center()
+            .rounded_md()
+            .border_1()
+            .border_color(content(0.14))
+            .child(slot.input.clone())
+            .into_any_element()
+    }
+    #[inline(never)]
+    fn render_code_editor(
+        &mut self,
+        node: &Node,
+        key: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Node::CodeEditor {
+            label,
+            value,
+            language,
+            height,
+            handler,
+            read_only,
+            submit_handler,
+            selection_handler,
+            context_menu,
+        } = node
+        else {
+            return div().into_any_element();
+        };
+        if !self.editors.contains_key(&key) {
+            let path = editor_path(language);
+            let syntax = crate::editor_syntax::supports(&path).then(|| Arc::new(Mutex::new(None)));
+            let input = cx.new(|cx| {
+                let mut input = crate::input::Input::editor(cx);
+                input.set_editor_path(path.clone());
+                input.set_max_chars(64 * 1024);
+                input.set_read_only(*read_only);
+                input.set_min_height((*height - 2.).max(20.));
+                input.set_max_height((*height - 2.).max(20.));
+                input.set_text(value.clone(), cx);
+                input
+            });
+            let changed_key = key.clone();
+            let changed_sub =
+                cx.subscribe(&input, move |this, input, _: &crate::input::Changed, cx| {
+                    let value = input.read(cx).content.to_string();
+                    let is_remote = this.remote.is_some();
+                    let handler = {
+                        let Some(slot) = this.editors.get_mut(&changed_key) else {
+                            return;
+                        };
+                        if value == slot.source_value {
+                            this.sync_editor_selection(&changed_key, cx);
+                            return;
+                        }
+                        slot.source_value = value.clone();
+                        if is_remote {
+                            if slot.pending.len() >= 64 {
+                                slot.pending.pop_front();
+                            }
+                            slot.pending.push_back(value.clone());
+                        }
+                        slot.handler.clone()
+                    };
+                    this.dispatch_raw(&handler, json!(value.clone()), cx);
+                    this.analyze_editor(&changed_key, value, cx);
+                    this.sync_editor_selection(&changed_key, cx);
+                });
+            let selection_key = key.clone();
+            let selection_sub = cx.subscribe(
+                &input,
+                move |this, _, _: &crate::input::SelectionChanged, cx| {
+                    this.sync_editor_selection(&selection_key, cx);
+                },
+            );
+            let submit_key = key.clone();
+            let submit_sub = cx.subscribe(
+                &input,
+                move |this, input, _: &crate::input::Submitted, cx| {
+                    let Some(handler) = this
+                        .editors
+                        .get(&submit_key)
+                        .and_then(|slot| slot.submit_handler.clone())
+                    else {
+                        return;
+                    };
+                    let selected = input.read(cx).selected_text();
+                    let payload = if selected.trim().is_empty() {
+                        Value::Null
+                    } else {
+                        json!(selected)
+                    };
+                    this.dispatch(&handler, payload, cx);
+                },
+            );
+            self.editors.insert(
+                key.clone(),
+                CodeEditorSlot {
+                    input: input.clone(),
+                    handler: handler.clone(),
+                    submit_handler: submit_handler.clone(),
+                    selection_handler: selection_handler.clone(),
+                    context_menu: context_menu.clone(),
+                    source_value: value.clone(),
+                    last_remote: value.clone(),
+                    last_selection: String::new(),
+                    pending: VecDeque::new(),
+                    height: *height,
+                    read_only: *read_only,
+                    path: path.clone(),
+                    syntax,
+                    _analysis: None,
+                    _subscriptions: vec![changed_sub, selection_sub, submit_sub],
+                },
+            );
+            self.analyze_editor(&key, value.clone(), cx);
+        }
+        let mut changed = false;
+        let new_path = editor_path(language);
+        {
+            let Some(slot) = self.editors.get_mut(&key) else {
+                return div().into_any_element();
+            };
+            slot.handler = handler.clone();
+            slot.submit_handler = submit_handler.clone();
+            slot.selection_handler = selection_handler.clone();
+            slot.context_menu = context_menu.clone();
+            if (slot.height - *height).abs() > 0.5 || slot.read_only != *read_only {
+                slot.height = *height;
+                slot.read_only = *read_only;
+                let inner = (*height - 2.).max(20.);
+                slot.input.update(cx, |input, cx| {
+                    input.set_read_only(*read_only);
+                    input.set_min_height(inner);
+                    input.set_max_height(inner);
+                    cx.notify();
+                });
+            }
+            if slot.path != new_path {
+                slot.path = new_path.clone();
+                slot.syntax =
+                    crate::editor_syntax::supports(&new_path).then(|| Arc::new(Mutex::new(None)));
+                slot.input
+                    .update(cx, |input, _| input.set_editor_path(new_path.clone()));
+                changed = true;
+            }
+            let current = slot.input.read(cx).content.to_string();
+            if accept_remote_text(&mut slot.pending, &mut slot.last_remote, &current, value) {
+                slot.source_value = value.clone();
+                slot.input
+                    .update(cx, |input, cx| input.set_text(value.clone(), cx));
+                changed = true;
+            }
+        }
+        if changed {
+            self.analyze_editor(&key, value.clone(), cx);
+        }
+        let input = self.editors[&key].input.clone();
+        let has_menu = !self.editors[&key].context_menu.is_empty();
+        div()
+            .id(SharedString::from(format!("visual-code-editor-{key}")))
+            .debug_selector({
+                let key = key.clone();
+                move || format!("visual-code-editor-{key}")
+            })
+            .role(Role::Group)
+            .aria_label(label.clone())
+            .w_full()
+            .min_w_0()
+            .h(px(*height))
+            .overflow_hidden()
+            .rounded_md()
+            .border_1()
+            .border_color(content(0.14))
+            .when(has_menu, |el| {
+                let menu_key = key.clone();
+                el.on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                        this.open_editor_menu(&menu_key, event.position, window, cx);
+                        cx.stop_propagation();
+                    }),
+                )
+            })
+            .child(input)
+            .into_any_element()
     }
     fn scene(
         &mut self,
@@ -1366,9 +1764,20 @@ impl Render for VisualView {
         };
         self.inputs.retain(|key, _| self.active.contains(key));
         self.editors.retain(|key, _| self.active.contains(key));
+        if self
+            .editor_menu
+            .as_ref()
+            .is_some_and(|open| !self.active.contains(&open.editor_key))
+        {
+            self.editor_menu = None;
+        }
         self.tracks.retain(|key, _| self.active.contains(key));
         self.orbits.retain(|key, _| self.active.contains(key));
         self.scene_cache.retain(|key, _| self.active.contains(key));
+        let popup = self.editor_menu.as_ref().map(|open| {
+            crate::popover::menu_popover(&open.menu, crate::popover::Anchor::Point(open.anchor), cx)
+                .gap(0.)
+        });
         let inline = self.inline.clone();
         // A visual in its own row is titled; placed in prose, it is captioned.
         let header = inline.is_none().then(|| {
@@ -1431,6 +1840,7 @@ impl Render for VisualView {
                     .text_color(content(0.5))
                     .child(caption.clone())
             }))
+            .children(popup)
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 if !event.dragging() {
                     this.slider_drag = None;
@@ -1466,6 +1876,25 @@ impl Render for VisualView {
                 }),
             )
     }
+}
+
+fn accept_remote_text(
+    pending: &mut VecDeque<String>,
+    last_remote: &mut String,
+    current: &str,
+    incoming: &str,
+) -> bool {
+    if let Some(pos) = pending.iter().position(|sent| sent == incoming) {
+        *last_remote = incoming.to_owned();
+        pending.drain(0..=pos);
+        return false;
+    }
+    if !pending.is_empty() && incoming == last_remote {
+        return false;
+    }
+    *last_remote = incoming.to_owned();
+    pending.clear();
+    current != incoming
 }
 
 fn editor_path(language: &str) -> String {

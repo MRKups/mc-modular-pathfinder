@@ -440,3 +440,125 @@ fn table_weights_are_optional_and_must_match_columns() {
     .unwrap();
     assert!(bad.validate().unwrap_err().contains("weights must match"));
 }
+
+#[test]
+fn compact_editor_spacer_and_selectable_table_validate() {
+    let tree: Node = serde_json::from_value(json!({
+        "kind": "column",
+        "gap": 8,
+        "children": [
+            {
+                "kind": "row",
+                "gap": 6,
+                "children": [
+                    {"kind": "text", "text": "[01] 4 ms", "size": "caption", "color": "muted", "monospace": true},
+                    {"kind": "spacer"},
+                    {"kind": "button", "label": "Run", "handler": "1", "disabled": false}
+                ]
+            },
+            {
+                "kind": "code_editor",
+                "label": "Cell",
+                "value": "1 + 1",
+                "language": "py",
+                "height": 54,
+                "handler": "2",
+                "submit_handler": "1"
+            },
+            {
+                "kind": "table",
+                "columns": ["Path", "Size"],
+                "rows": [["data.csv", "1 KB"]],
+                "handler": "3",
+                "selected": 0
+            }
+        ]
+    }))
+    .unwrap();
+    tree.validate().unwrap();
+
+    let out_of_bounds: Node = serde_json::from_value(json!({
+        "kind": "table",
+        "columns": ["Path"],
+        "rows": [["data.csv"]],
+        "selected": 2
+    }))
+    .unwrap();
+    assert!(out_of_bounds.validate().unwrap_err().contains("out of bounds"));
+
+    let right_margin_tree: Node = serde_json::from_value(json!({
+        "kind": "page_tabs",
+        "labels": ["Notebook", "Variables"],
+        "selected": 0,
+        "handler": "0",
+        "right_margin": true,
+        "children": [
+            {
+                "kind": "row",
+                "gap": 24,
+                "children": [
+                    {
+                        "kind": "code_editor",
+                        "label": "Block 1",
+                        "value": "x = 1",
+                        "language": "py",
+                        "height": 200,
+                        "handler": "1",
+                        "submit_handler": "2",
+                        "selection_handler": "3"
+                    },
+                    {
+                        "kind": "column",
+                        "gap": 6,
+                        "width": 180,
+                        "children": [
+                            {"kind": "button", "label": "Run block", "handler": "2", "disabled": false}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+    right_margin_tree.validate().unwrap();
+
+    let bad_width: Node = serde_json::from_value(json!({
+        "kind": "column",
+        "gap": 6,
+        "width": 12,
+        "children": []
+    }))
+    .unwrap();
+    assert!(bad_width.validate().unwrap_err().contains("column width"));
+
+    let three_col: Node = serde_json::from_value(json!({
+        "kind": "row",
+        "gap": 16,
+        "children": [
+            {"kind": "column", "gap": 8, "weight": 0.9, "children": []},
+            {
+                "kind": "column",
+                "gap": 8,
+                "weight": 1.8,
+                "children": [
+                    {
+                        "kind": "code_editor",
+                        "label": "Notebook",
+                        "value": "x = 1",
+                        "language": "py",
+                        "height": 960,
+                        "handler": "4",
+                        "selection_handler": "5",
+                        "context_menu": [
+                            {"label": "Run selected", "handler": "6", "requires_selection": true},
+                            {"label": "Run all", "handler": "7"}
+                        ]
+                    }
+                ]
+            },
+            {"kind": "column", "gap": 8, "weight": 1.3, "children": []}
+        ]
+    }))
+    .unwrap();
+    three_col.validate().unwrap();
+}

@@ -98,6 +98,19 @@ pub struct Slice {
     pub color: ThemeColor,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextMenuItem {
+    pub label: String,
+    pub handler: String,
+    #[serde(default)]
+    pub disabled: bool,
+    /// When true, the action is enabled only while non-whitespace text is
+    /// selected in the editor and receives that selected text as its payload.
+    #[serde(default)]
+    pub requires_selection: bool,
+}
+
 fn default_page_nav_width() -> f32 {
     180.
 }
@@ -108,6 +121,10 @@ pub enum Node {
     Column {
         children: Vec<Node>,
         gap: f32,
+        #[serde(default)]
+        width: Option<f32>,
+        #[serde(default)]
+        weight: Option<f32>,
     },
     Row {
         children: Vec<Node>,
@@ -123,10 +140,14 @@ pub enum Node {
         children: Vec<Node>,
         gap: f32,
     },
+    /// Flexible empty space inside a row or small vertical separator in a column.
+    Spacer,
     Text {
         text: String,
         size: TextSize,
         color: ThemeColor,
+        #[serde(default)]
+        monospace: bool,
     },
     Stat {
         label: String,
@@ -149,6 +170,10 @@ pub enum Node {
         /// Relative column widths. Empty means equal columns.
         #[serde(default)]
         weights: Vec<f32>,
+        #[serde(default)]
+        handler: Option<String>,
+        #[serde(default)]
+        selected: Option<usize>,
     },
     Chart {
         chart_type: ChartKind,
@@ -197,6 +222,8 @@ pub enum Node {
         value: String,
         placeholder: Option<String>,
         handler: String,
+        #[serde(default)]
+        submit_handler: Option<String>,
     },
     /// A multiline, syntax-highlighted code field. `language` is a short
     /// extension such as `js`, `py`, `rs`, or `go`; unknown values stay plain.
@@ -208,6 +235,12 @@ pub enum Node {
         handler: String,
         #[serde(default)]
         read_only: bool,
+        #[serde(default)]
+        submit_handler: Option<String>,
+        #[serde(default)]
+        selection_handler: Option<String>,
+        #[serde(default)]
+        context_menu: Vec<ContextMenuItem>,
     },
     Select {
         label: String,
@@ -237,6 +270,8 @@ pub enum Node {
         handler: String,
         #[serde(default = "default_page_nav_width")]
         nav_width: f32,
+        #[serde(default)]
+        right_margin: bool,
         children: Vec<Node>,
     },
     Canvas {
@@ -347,9 +382,24 @@ impl Node {
             return Err("Visual tree exceeds 512 nodes or 16 levels".into());
         }
         match self {
-            Self::Column { children, gap }
-            | Self::Row { children, gap }
-            | Self::Card { children, gap } => {
+            Self::Column {
+                children,
+                gap,
+                width,
+                weight,
+            } => {
+                bounded(*gap as f64, 0., 48., "layout gap")?;
+                if let Some(width) = width {
+                    bounded(*width as f64, 40., 400., "column width")?;
+                }
+                if let Some(weight) = weight {
+                    bounded(*weight as f64, 0.1, 20., "column weight")?;
+                }
+                children
+                    .iter()
+                    .try_for_each(|n| n.validate_with(depth + 1, budget))?;
+            }
+            Self::Row { children, gap } | Self::Card { children, gap } => {
                 bounded(*gap as f64, 0., 48., "layout gap")?;
                 children
                     .iter()
@@ -368,6 +418,7 @@ impl Node {
                     .iter()
                     .try_for_each(|n| n.validate_with(depth + 1, budget))?;
             }
+            Self::Spacer => {}
             Self::Text { text, .. } => budget.text(text, 16_384)?,
             Self::Stat {
                 label,
@@ -468,12 +519,20 @@ impl Node {
                 columns,
                 rows,
                 weights,
+                handler,
+                selected,
             } => {
                 if columns.is_empty() || columns.len() > 24 || rows.len() > 250 {
                     return Err("Table needs 1–24 columns and at most 250 rows".into());
                 }
                 if !weights.is_empty() && weights.len() != columns.len() {
                     return Err("Table weights must match its columns".into());
+                }
+                if let Some(handler) = handler {
+                    validate_handler(handler)?;
+                }
+                if selected.is_some_and(|selected| selected >= rows.len()) {
+                    return Err("Table selected row index is out of bounds".into());
                 }
                 for weight in weights {
                     bounded(*weight as f64, 0.1, 20., "table column weight")?;
@@ -548,6 +607,7 @@ impl Node {
                 value,
                 placeholder,
                 handler,
+                submit_handler,
             } => {
                 budget.text(label, 256)?;
                 budget.text(value, 4096)?;
@@ -555,6 +615,9 @@ impl Node {
                     budget.text(placeholder, 256)?;
                 }
                 validate_handler(handler)?;
+                if let Some(submit_handler) = submit_handler {
+                    validate_handler(submit_handler)?;
+                }
             }
             Self::CodeEditor {
                 label,
@@ -562,13 +625,32 @@ impl Node {
                 language,
                 height,
                 handler,
+                submit_handler,
+                selection_handler,
+                context_menu,
                 ..
             } => {
                 budget.text(label, 256)?;
                 budget.text(value, 64 * 1024)?;
                 budget.text(language, 32)?;
-                bounded(*height as f64, 120., 900., "code editor height")?;
+                bounded(*height as f64, 44., 1400., "code editor height")?;
                 validate_handler(handler)?;
+                if let Some(submit_handler) = submit_handler {
+                    validate_handler(submit_handler)?;
+                }
+                if let Some(selection_handler) = selection_handler {
+                    validate_handler(selection_handler)?;
+                }
+                if context_menu.len() > 12 {
+                    return Err("Code editor context menu allows at most 12 items".into());
+                }
+                for item in context_menu {
+                    if item.label.trim().is_empty() {
+                        return Err("Context menu label cannot be empty".into());
+                    }
+                    budget.text(&item.label, 128)?;
+                    validate_handler(&item.handler)?;
+                }
             }
             Self::Select {
                 label,
@@ -604,6 +686,7 @@ impl Node {
                 handler,
                 nav_width,
                 children,
+                ..
             } => {
                 if labels.is_empty() || labels.len() > 12 || *selected >= labels.len() {
                     return Err("Page tabs need 1–12 labels and a valid selected index".into());

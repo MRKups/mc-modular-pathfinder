@@ -94,23 +94,54 @@ fn surface_key(plugin_id: &str, surface_id: &str) -> String {
     format!("{plugin_id}\0{surface_id}")
 }
 
+fn rewrite_handler(handler: &mut String, map: &mut HashMap<String, String>) {
+    let original = std::mem::take(handler);
+    let id = map.len().to_string();
+    map.insert(id.clone(), original);
+    *handler = id;
+}
+
 fn rewrite_handlers(node: &mut Node, map: &mut HashMap<String, String>) {
-    let handler = match node {
+    match node {
         Node::Button { handler, .. }
         | Node::Toggle { handler, .. }
-        | Node::Input { handler, .. }
-        | Node::CodeEditor { handler, .. }
         | Node::Select { handler, .. }
         | Node::Slider { handler, .. }
         | Node::Tabs { handler, .. }
-        | Node::PageTabs { handler, .. } => Some(handler),
-        _ => None,
-    };
-    if let Some(handler) = handler {
-        let original = std::mem::take(handler);
-        let id = map.len().to_string();
-        map.insert(id.clone(), original);
-        *handler = id;
+        | Node::PageTabs { handler, .. } => rewrite_handler(handler, map),
+        Node::Input {
+            handler,
+            submit_handler,
+            ..
+        } => {
+            rewrite_handler(handler, map);
+            if let Some(submit_handler) = submit_handler {
+                rewrite_handler(submit_handler, map);
+            }
+        }
+        Node::CodeEditor {
+            handler,
+            submit_handler,
+            selection_handler,
+            context_menu,
+            ..
+        } => {
+            rewrite_handler(handler, map);
+            if let Some(submit_handler) = submit_handler {
+                rewrite_handler(submit_handler, map);
+            }
+            if let Some(selection_handler) = selection_handler {
+                rewrite_handler(selection_handler, map);
+            }
+            for item in context_menu {
+                rewrite_handler(&mut item.handler, map);
+            }
+        }
+        Node::Table {
+            handler: Some(handler),
+            ..
+        } => rewrite_handler(handler, map),
+        _ => {}
     }
     match node {
         Node::Column { children, .. }
@@ -807,12 +838,28 @@ mod tests {
             "gap": 8,
             "children": [
                 {"kind": "button", "label": "Click", "handler": "click", "disabled": false},
-                {"kind": "input", "label": "Name", "value": "", "placeholder": "Name", "handler": "name"},
+                {"kind": "input", "label": "Name", "value": "", "placeholder": "Name", "handler": "name", "submit_handler": "submit:name"},
+                {
+                    "kind": "code_editor",
+                    "label": "Code",
+                    "value": "x = 1",
+                    "language": "py",
+                    "height": 54,
+                    "handler": "cell:1",
+                    "submit_handler": "run:1",
+                    "selection_handler": "select:1",
+                    "context_menu": [
+                        {"label": "Run selected", "handler": "run_sel:1", "requires_selection": true},
+                        {"label": "Run all", "handler": "run_all"}
+                    ]
+                },
+                {"kind": "table", "columns": ["Path"], "rows": [["a.csv"]], "handler": "pick:file"},
                 {
                     "kind": "page_tabs",
                     "labels": ["One", "Two"],
                     "selected": 0,
                     "handler": "page",
+                    "right_margin": true,
                     "children": [
                         {"kind": "button", "label": "Inner", "handler": "inner", "disabled": false}
                     ]
@@ -825,8 +872,15 @@ mod tests {
         node.validate().unwrap();
         assert_eq!(handlers.get("0").map(String::as_str), Some("click"));
         assert_eq!(handlers.get("1").map(String::as_str), Some("name"));
-        assert_eq!(handlers.get("2").map(String::as_str), Some("page"));
-        assert_eq!(handlers.get("3").map(String::as_str), Some("inner"));
+        assert_eq!(handlers.get("2").map(String::as_str), Some("submit:name"));
+        assert_eq!(handlers.get("3").map(String::as_str), Some("cell:1"));
+        assert_eq!(handlers.get("4").map(String::as_str), Some("run:1"));
+        assert_eq!(handlers.get("5").map(String::as_str), Some("select:1"));
+        assert_eq!(handlers.get("6").map(String::as_str), Some("run_sel:1"));
+        assert_eq!(handlers.get("7").map(String::as_str), Some("run_all"));
+        assert_eq!(handlers.get("8").map(String::as_str), Some("pick:file"));
+        assert_eq!(handlers.get("9").map(String::as_str), Some("page"));
+        assert_eq!(handlers.get("10").map(String::as_str), Some("inner"));
     }
 
     #[gpui::test]

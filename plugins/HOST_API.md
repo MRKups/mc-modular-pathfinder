@@ -89,9 +89,9 @@ feature flags, and limits. Use it instead of copying a versioned API list.
   "protocol": 1,
   "appVersion": "0.16.0",
   "pluginDir": "/Users/me/project/plugins",
-  "methods": ["workspace.info", "storage.get", "storage.set", "host.describe", "llm.providers", "llm.complete"],
-  "features": {"codeEditor": true, "llm": true},
-  "limits": {"lineBytes": 2097152, "uiTreeBytes": 1048576, "uiNodes": 512, "sourceBytes": 65536, "llmPromptBytes": 65536, "llmSystemBytes": 16384}
+  "methods": ["workspace.info", "storage.get", "storage.set", "host.describe", "llm.providers", "llm.complete", "session.start"],
+  "features": {"codeEditor": true, "llm": true, "sessions": true},
+  "limits": {"lineBytes": 2097152, "uiTreeBytes": 1048576, "uiNodes": 512, "sourceBytes": 65536, "llmPromptBytes": 65536, "llmSystemBytes": 16384, "sessionTitleBytes": 200}
 }
 ```
 
@@ -155,6 +155,34 @@ Params:
 - Do not expose the Operator app token to plugins. This is the narrow model
   boundary.
 
+### `session.start`
+
+Creates a new workspace chat session with the user's default provider, leaves
+the active plugin page, focuses the new session, and submits an opening prompt.
+
+Request:
+
+```json
+{"jsonrpc":"2.0","id":12,"method":"session.start","params":{
+  "title": "Plugin: Port Inspector",
+  "prompt": "Help me build the Port Inspector plugin scaffolded in plugin-sources/port-inspector."
+}}
+```
+
+Result:
+
+```json
+{"jsonrpc":"2.0","id":12,"result":{
+  "sessionId": 42,
+  "provider": "claude"
+}}
+```
+
+Params:
+
+- `prompt` is required, non-empty, and at most 64 KiB.
+- `title` is optional, trimmed, and at most 200 bytes.
+
 ## UI code editor
 
 The native UI schema now includes a multiline, syntax-highlighted
@@ -202,3 +230,4 @@ The current API is deliberately small:
 - `host.describe`
 - `llm.providers`
 - `llm.complete`
+- `session.start`

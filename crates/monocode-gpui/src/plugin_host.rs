@@ -79,6 +79,7 @@ pub(crate) struct PluginSurfaceHost {
     runtime: PluginRuntime,
     events: Receiver<HostEvent>,
     host_api: HostApi,
+    shell: Option<gpui::WeakEntity<crate::shell::Shell>>,
     plugins: HashMap<String, PluginEntry>,
     views: HashMap<String, Entity<VisualView>>,
     /// Native visuals only accept numeric callback ids. Plugins get readable
@@ -193,6 +194,7 @@ impl PluginSurfaceHost {
             runtime,
             events,
             host_api: HostApi::new(root.clone(), None),
+            shell: None,
             plugins: HashMap::new(),
             views: HashMap::new(),
             handler_maps: HashMap::new(),
@@ -255,6 +257,7 @@ impl PluginSurfaceHost {
             runtime,
             events,
             host_api,
+            shell: None,
             plugins: HashMap::new(),
             views: HashMap::new(),
             handler_maps: HashMap::new(),
@@ -274,6 +277,11 @@ impl PluginSurfaceHost {
             }
         }));
         this
+    }
+
+    pub(crate) fn with_shell(mut self, shell: gpui::WeakEntity<crate::shell::Shell>) -> Self {
+        self.shell = Some(shell);
+        self
     }
 
     fn drain(&mut self, cx: &mut Context<Self>) {
@@ -371,6 +379,44 @@ impl PluginSurfaceHost {
                                     })
                                 });
                                 runtime.respond(&plugin_id, id, result);
+                            });
+                        }
+                        Err(error) => self.runtime.respond(&plugin_id, id, Err(error)),
+                    }
+                } else if method == "session.start" {
+                    match self.host_api.prepare_session_start(params) {
+                        Ok(start) => {
+                            let Some(shell) = self.shell.clone() else {
+                                self.runtime.respond(
+                                    &plugin_id,
+                                    id,
+                                    Err("No workspace shell is attached".into()),
+                                );
+                                return false;
+                            };
+                            let runtime = self.runtime.clone();
+                            cx.defer(move |cx| {
+                                let fallback_runtime = runtime.clone();
+                                let fallback_plugin = plugin_id.clone();
+                                if shell
+                                    .update(cx, |shell, cx| {
+                                        shell.start_plugin_session(
+                                            plugin_id,
+                                            id,
+                                            start.title,
+                                            start.prompt,
+                                            runtime,
+                                            cx,
+                                        );
+                                    })
+                                    .is_err()
+                                {
+                                    fallback_runtime.respond(
+                                        &fallback_plugin,
+                                        id,
+                                        Err("Workspace shell is unavailable".into()),
+                                    );
+                                }
                             });
                         }
                         Err(error) => self.runtime.respond(&plugin_id, id, Err(error)),
@@ -915,6 +961,7 @@ mod tests {
                         runtime,
                         events,
                         host_api: HostApi::new(dir.clone(), Some(dir.clone())),
+                        shell: None,
                         plugins: HashMap::new(),
                         views: HashMap::new(),
                         handler_maps: HashMap::new(),

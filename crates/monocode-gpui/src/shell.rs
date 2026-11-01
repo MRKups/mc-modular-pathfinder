@@ -1157,8 +1157,11 @@ impl Shell {
         };
         if let Some(location) = plugin_location {
             let workspace_root = PathBuf::from(&this.workspace.project);
-            let host = cx
-                .new(|cx| crate::plugin_host::PluginSurfaceHost::new(location, workspace_root, cx));
+            let shell_owner = cx.weak_entity();
+            let host = cx.new(|cx| {
+                crate::plugin_host::PluginSurfaceHost::new(location, workspace_root, cx)
+                    .with_shell(shell_owner)
+            });
             this.observations.push(cx.observe(&host, |this, _, cx| {
                 this.invalidate_chrome(cx);
                 cx.notify();
@@ -4112,6 +4115,124 @@ impl Shell {
         if host.read(cx).is_active() {
             host.update(cx, |host, cx| host.close(cx));
         }
+    }
+    /// Create a new session with the default provider, open it in place of the
+    /// active plugin surface, and submit an initial prompt.
+    pub(crate) fn start_plugin_session(
+        &mut self,
+        plugin_id: String,
+        request_id: u64,
+        title: Option<String>,
+        prompt: String,
+        runtime: monocode_plugin_host::PluginRuntime,
+        cx: &mut Context<Self>,
+    ) {
+        let store = self.store.clone();
+        let cwd = self.workspace.project.clone();
+        let kind = self.default_kind();
+        let focus = self.worktree_focus.get(&cwd).cloned();
+        let copy = focus.clone().filter(|f| {
+            monocode_core::files::path_key(&f.path) != monocode_core::files::path_key(&cwd)
+        });
+        let model = self
+            .workspace
+            .preferences
+            .project_providers
+            .get(&cwd)
+            .and_then(|p| p.models.get(kind.id()))
+            .or(self.workspace.preferences.default_models.get(kind.id()))
+            .cloned();
+        let account = crate::accounts::get(cx)
+            .map(|center| center.read(cx).selected(kind, &cwd))
+            .unwrap_or_default();
+        let access = crate::conversation::default_access(cx);
+        let effort = crate::conversation::preferred_effort(kind.id(), cx);
+        self.navigation_revision += 1;
+        let revision = self.navigation_revision;
+        let work = cx.background_executor().spawn({
+            let cwd = cwd.clone();
+            let worktree_cwd = copy.as_ref().map(|f| f.path.clone());
+            async move {
+                if !std::path::Path::new(&cwd).is_dir() {
+                    return Err("Choose a project folder before starting a session".into());
+                }
+                let store = locked(&store)?;
+                let mut summary = store.create(kind.id(), &cwd)?;
+                if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
+                    let title = title.trim().to_string();
+                    store.title(summary.id, &title)?;
+                    summary.title = title;
+                }
+                let mut settings = session_loading::new_session_settings(
+                    store
+                        .desktop_preferences()
+                        .and_then(|preferences| preferences.session_defaults(kind.id(), &cwd)),
+                    model,
+                );
+                settings.access = access;
+                if let Some(effort) = effort {
+                    settings.model_settings.retain(|key, _| {
+                        !matches!(
+                            key.as_str(),
+                            "effort" | "reasoning" | "reasoningEffort" | "reasoning_effort"
+                        )
+                    });
+                    settings.effort = Some(effort);
+                }
+                settings.account = account;
+                settings.worktree_cwd = worktree_cwd;
+                store.save_agent_settings(summary.id, &settings)?;
+                Ok::<_, String>((summary, settings))
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let fallback_runtime = runtime.clone();
+            let fallback_plugin = plugin_id.clone();
+            if this
+                .update_in(cx, |this, window, cx| match result {
+                    Ok((summary, settings)) => {
+                        let id = summary.id;
+                        this.add(summary, cx);
+                        this.order.retain(|s| *s != id);
+                        this.order.insert(0, id);
+                        this.seed_worktree(id, copy.as_ref(), cx);
+                        if let Some(view) = this.sessions.get(&id) {
+                            view.update(cx, |view, cx| view.quick_submit(prompt, settings, cx));
+                        }
+                        if this.navigation_revision == revision {
+                            this.leave_plugin_surface(cx);
+                            this.activate_session(id, window, cx);
+                            this.update_chat_visibility(cx);
+                            this.sync_right_panel(cx);
+                            this.invalidate_chrome(cx);
+                        }
+                        this.persist(cx);
+                        runtime.respond(
+                            &plugin_id,
+                            request_id,
+                            Ok(serde_json::json!({
+                                "sessionId": id,
+                                "provider": kind.id(),
+                            })),
+                        );
+                    }
+                    Err(error) => {
+                        runtime.respond(&plugin_id, request_id, Err(error.clone()));
+                        this.error = Some(error);
+                        cx.notify();
+                    }
+                })
+                .is_err()
+            {
+                fallback_runtime.respond(
+                    &fallback_plugin,
+                    request_id,
+                    Err("Workspace window closed".into()),
+                );
+            }
+        })
+        .detach();
     }
     /// Opening a conversation that has no tab takes over a blank pane in the
     /// active tab instead of adding a tab, as in the desktop app.

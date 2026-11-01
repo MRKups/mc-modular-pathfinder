@@ -19,6 +19,7 @@ use std::{fs, io::ErrorKind, path::PathBuf};
 
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_SYSTEM_BYTES: usize = 16 * 1024;
+const MAX_SESSION_TITLE_BYTES: usize = 200;
 
 /// A prepared one-shot model request. The adapter runs it on a background
 /// worker so a slow provider never blocks UI input.
@@ -27,6 +28,14 @@ pub(crate) struct Completion {
     pub request: Request,
     pub provider: String,
     pub model: Option<String>,
+}
+
+/// Validated parameters for opening a new workspace chat session with an
+/// initial prompt.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SessionStart {
+    pub title: Option<String>,
+    pub prompt: String,
 }
 
 /// A host request is answered from this fixed surface. Add methods here as
@@ -183,6 +192,38 @@ impl HostApi {
         })
     }
 
+    /// Validate `session.start` params before handing off to the shell.
+    pub(crate) fn prepare_session_start(&self, params: Value) -> Result<SessionStart, String> {
+        let params: SessionStartParams = serde_json::from_value(params)
+            .map_err(|error| format!("Invalid session.start params: {error}"))?;
+        if params.prompt.trim().is_empty() {
+            return Err("Prompt must not be empty".into());
+        }
+        if params.prompt.len() > MAX_PROMPT_BYTES {
+            return Err(format!(
+                "Prompt exceeds the {} byte limit",
+                MAX_PROMPT_BYTES
+            ));
+        }
+        let title = match params.title {
+            Some(raw) => {
+                let trimmed = raw.trim().to_string();
+                if trimmed.len() > MAX_SESSION_TITLE_BYTES {
+                    return Err(format!(
+                        "Session title exceeds the {} byte limit",
+                        MAX_SESSION_TITLE_BYTES
+                    ));
+                }
+                (!trimmed.is_empty()).then_some(trimmed)
+            }
+            None => None,
+        };
+        Ok(SessionStart {
+            title,
+            prompt: params.prompt,
+        })
+    }
+
     fn describe(&self) -> Result<Value, String> {
         Ok(json!({
             "protocol": monocode_plugin_host::PROTOCOL_VERSION,
@@ -194,11 +235,13 @@ impl HostApi {
                 "storage.set",
                 "host.describe",
                 "llm.providers",
-                "llm.complete"
+                "llm.complete",
+                "session.start"
             ],
             "features": {
                 "codeEditor": true,
-                "llm": true
+                "llm": true,
+                "sessions": true
             },
             "limits": {
                 "lineBytes": 2 * 1024 * 1024,
@@ -206,7 +249,8 @@ impl HostApi {
                 "uiNodes": MAX_NODES,
                 "sourceBytes": MAX_SOURCE_BYTES,
                 "llmPromptBytes": MAX_PROMPT_BYTES,
-                "llmSystemBytes": MAX_SYSTEM_BYTES
+                "llmSystemBytes": MAX_SYSTEM_BYTES,
+                "sessionTitleBytes": MAX_SESSION_TITLE_BYTES
             }
         }))
     }
@@ -321,6 +365,14 @@ struct CompleteParams {
     model: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionStartParams {
+    prompt: String,
+    #[serde(default)]
+    title: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,14 +443,48 @@ mod tests {
         let value = api.call("com.test", "host.describe", Value::Null).unwrap();
         assert_eq!(value["protocol"], 1);
         assert_eq!(value["features"]["codeEditor"], true);
-        assert!(
-            value["methods"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|method| method == "llm.complete")
-        );
+        assert_eq!(value["features"]["sessions"], true);
+        let methods = value["methods"].as_array().unwrap();
+        assert!(methods.iter().any(|method| method == "llm.complete"));
+        assert!(methods.iter().any(|method| method == "session.start"));
         assert_eq!(value["limits"]["uiNodes"], MAX_NODES);
+    }
+
+    #[test]
+    fn session_start_validates_prompt_and_optional_title() {
+        let api = HostApi::new(PathBuf::from("/work/monocode"), None);
+        let parsed = api
+            .prepare_session_start(json!({
+                "title": "  Plugin: Port Inspector  ",
+                "prompt": "Help me build this plugin."
+            }))
+            .unwrap();
+        assert_eq!(
+            parsed,
+            SessionStart {
+                title: Some("Plugin: Port Inspector".into()),
+                prompt: "Help me build this plugin.".into(),
+            }
+        );
+
+        let untitled = api
+            .prepare_session_start(json!({"title": "   ", "prompt": "Start here"}))
+            .unwrap();
+        assert_eq!(untitled.title, None);
+
+        assert!(
+            api.prepare_session_start(json!({"prompt": "   "}))
+                .unwrap_err()
+                .contains("Prompt must not be empty")
+        );
+        assert!(
+            api.prepare_session_start(json!({
+                "title": "x".repeat(MAX_SESSION_TITLE_BYTES + 1),
+                "prompt": "hello"
+            }))
+            .unwrap_err()
+            .contains("Session title exceeds")
+        );
     }
 
     #[gpui::test]

@@ -215,7 +215,9 @@ The current surface is deliberately small:
   limits, and plugin directory;
 - `llm.providers` lists installed text-capable providers and cached models;
 - `llm.complete` runs a bounded, text-only, read-only provider request on a
-  worker thread and returns `{text, provider, model}`.
+  worker thread and returns `{text, provider, model}`;
+- `session.start` opens a new workspace chat session with the user's default
+  provider and submits an opening prompt.
 
 `llm.complete` must never run on the GPUI thread. The adapter validates and
 prepares the request, spawns the blocking `provider::run_text` call, and sends

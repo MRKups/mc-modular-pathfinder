@@ -1,62 +1,38 @@
 #!/usr/bin/env node
-// Plugin Authoring Station: plugin docs, host API reference, scaffolding,
-// source editing, and one-shot model help in a TOC-and-column layout.
+// Plugin Authoring: scaffold a Python, Rust, or Node.js plugin from a
+// structured spec and launch a guided Monocode session, or inspect detected
+// plugins in the workspace.
 //
 // stdout is protocol traffic only; diagnostics go to stderr.
 
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
-import { fileURLToPath } from "node:url";
 
 const SURFACE = "authoring-station";
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const DOCS_DIR = path.join(HERE, "docs");
-const LANGUAGES = ["Node.js", "Python", "Rust"];
-const TABS = ["Guide", "API", "Scaffold", "Generate", "Editor"];
-const STEPS = ["Identity", "Destination", "Review", "Created"];
-const METHOD_NOTES = {
-  "workspace.info": "Active project root and directory name.",
-  "storage.get": "Read one plugin-scoped JSON value.",
-  "storage.set": "Write one plugin-scoped JSON value.",
-  "host.describe": "Protocol, methods, limits, features, plugin directory.",
-  "llm.providers": "Installed text-capable providers and cached models.",
-  "llm.complete": "Async, text-only, read-only model completion.",
-};
+const REPO_URL = "https://github.com/MRKups/monocode";
+const REPO_BRANCH = "kups/mc-plugins";
+const DOCS_BASE_URL = `${REPO_URL}/blob/${REPO_BRANCH}`;
+const TREE_BASE_URL = `${REPO_URL}/tree/${REPO_BRANCH}`;
+const TABS = ["New Plugin", "Plugins"];
+const LANGUAGES = ["Python", "Rust", "Node.js"];
 
 const state = {
   root: "",
+  pluginDir: "",
   tab: 0,
-  docs: [],
-  describe: null,
-  describeError: "",
-  providers: [],
-  providersError: "",
-  providerIndex: 0,
-  model: "",
-  system:
-    "You are a concise Monocode plugin expert. Produce complete, runnable files. Follow protocol v1 and use only documented host methods.",
-  prompt: "",
-  response: "",
-  generating: false,
+  starting: false,
   status: "",
-  scaffold: {
-    step: 0,
+  form: {
     name: "",
     id: "",
-    description: "",
     language: 0,
-    target: "",
-    files: [],
-    dir: "",
-    mainFile: "",
+    purpose: "",
+    successCriteria: "",
+    constraints: "",
   },
-  editor: {
-    path: "",
-    content: "",
-    language: "js",
-    dirty: false,
-  },
+  plugins: [],
+  selectedPlugin: 0,
   nextId: 10,
   pending: new Map(),
 };
@@ -87,8 +63,18 @@ function clip(value, limit) {
   return clean(value).slice(0, limit);
 }
 
-function text(value, size = "body", color = "ink") {
-  return { kind: "text", text: clip(value, 16000), size, color };
+function text(value, size = "body", color = "ink", monospace = false) {
+  const node = { kind: "text", text: clip(value, 16000), size, color };
+  if (monospace) node.monospace = true;
+  return node;
+}
+
+function field(label, control) {
+  return {
+    kind: "column",
+    gap: 4,
+    children: [text(label, "caption", "muted"), control],
+  };
 }
 
 function section(title, children) {
@@ -99,44 +85,34 @@ function section(title, children) {
   };
 }
 
-function row(children) {
-  return { kind: "row", gap: 8, children };
-}
-
-function withStatus(body) {
-  if (!state.status) return body;
-  const status = text(
-    state.status,
-    "small",
-    state.status.startsWith("Error") ? "warning" : "muted",
-  );
-  if (body && body.kind === "column") {
-    return { ...body, children: [status, ...body.children] };
-  }
-  return { kind: "column", gap: 12, children: [status, body] };
-}
-
-function table(columns, rows, weights = []) {
-  const safeColumns = columns.map((column) => clean(column).slice(0, 256)).slice(0, 24);
-  const node = {
-    kind: "table",
-    columns: safeColumns,
-    rows: rows
-      .slice(0, 250)
-      .map((row) =>
-        safeColumns.map((_, index) => clip(row[index] ?? "", 2048)),
-      ),
-  };
-  if (weights.length === safeColumns.length) node.weights = weights;
-  return node;
+function row(children, gap = 8) {
+  return { kind: "row", gap, children };
 }
 
 function button(label, handler, disabled = false) {
   return { kind: "button", label, handler, disabled };
 }
 
-function inputNode(label, value, placeholder, handler) {
-  return { kind: "input", label, value: clip(value, 4096), placeholder, handler };
+function inputNode(label, value, placeholder, handler, submitHandler = "") {
+  const node = {
+    kind: "input",
+    label,
+    value: clip(value, 4096),
+    placeholder,
+    handler,
+  };
+  if (submitHandler) node.submit_handler = submitHandler;
+  return node;
+}
+
+function selectNode(label, options, selected, handler) {
+  return {
+    kind: "select",
+    label,
+    options,
+    selected: Math.max(0, Math.min(options.length - 1, Number(selected) || 0)),
+    handler,
+  };
 }
 
 function codeEditor(label, value, language, height, handler, readOnly = false) {
@@ -145,10 +121,34 @@ function codeEditor(label, value, language, height, handler, readOnly = false) {
     label,
     value: clip(value, 64 * 1024),
     language,
-    height: Math.max(120, Math.min(900, Math.round(height))),
+    height: Math.max(80, Math.min(900, Math.round(height))),
     handler,
     read_only: readOnly,
   };
+}
+
+function table(columns, rows, weights = [], selected = null, handler = "") {
+  const safeColumns = columns.map((col) => clip(col, 256)).slice(0, 24);
+  const safeRows = rows
+    .slice(0, 250)
+    .map((item) => safeColumns.map((_, index) => clip(item[index] ?? "", 2048)));
+  const node = {
+    kind: "table",
+    columns: safeColumns,
+    rows: safeRows,
+  };
+  if (weights.length === safeColumns.length) node.weights = weights;
+  if (handler) node.handler = handler;
+  if (
+    selected !== null &&
+    selected !== undefined &&
+    safeRows.length > 0 &&
+    selected >= 0 &&
+    selected < safeRows.length
+  ) {
+    node.selected = selected;
+  }
+  return node;
 }
 
 function pageTabs(labels, selected, handler, children) {
@@ -157,9 +157,19 @@ function pageTabs(labels, selected, handler, children) {
     labels,
     selected,
     handler,
-    nav_width: 180,
+    nav_width: 170,
     children,
   };
+}
+
+function withStatus(body) {
+  if (!state.status) return body;
+  const color = state.status.startsWith("Error") ? "warning" : "positive";
+  const banner = text(state.status, "small", color);
+  if (body && body.kind === "column") {
+    return { ...body, children: [banner, ...body.children] };
+  }
+  return { kind: "column", gap: 12, children: [banner, body] };
 }
 
 function publish() {
@@ -167,215 +177,8 @@ function publish() {
 }
 
 /* ---------------------------------------------------------------------------
- * Documentation
+ * Form and path helpers
  * ------------------------------------------------------------------------ */
-
-function loadDocs() {
-  try {
-    const names = fs
-      .readdirSync(DOCS_DIR)
-      .filter((name) => name.toLowerCase().endsWith(".md"))
-      .sort();
-    state.docs = names.map((name) => {
-      const content = fs.readFileSync(path.join(DOCS_DIR, name), "utf8");
-      return {
-        name,
-        title: name.replace(/\.md$/, "").replace(/[-_]/g, " "),
-        content: content.slice(0, 40000),
-      };
-    });
-  } catch (error) {
-    state.docs = [];
-    state.describeError = `Cannot read bundled docs: ${error.message}`;
-  }
-}
-
-function inlineMarkdown(value) {
-  return clean(value)
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/\*\*([^*]+)\*\*/g, "$1")
-    .replace(/__([^_]+)__/g, "$1")
-    .replace(/\*([^*]+)\*/g, "$1")
-    .replace(/_([^_]+)_/g, "$1")
-    .trim();
-}
-
-/// A small Markdown reader for the bundled docs. It renders headings, prose,
-/// lists, code fences, and simple pipe tables as native nodes.
-function markdownNodes(markdown) {
-  const lines = clean(markdown).slice(0, 40000).split("\n");
-  const nodes = [];
-  let paragraph = [];
-  let truncated = false;
-
-  const flush = () => {
-    if (!paragraph.length) return;
-    nodes.push(text(inlineMarkdown(paragraph.join(" ")), "body", "muted"));
-    paragraph = [];
-  };
-  const push = (node) => {
-    if (nodes.length >= 180) {
-      truncated = true;
-      return false;
-    }
-    nodes.push(node);
-    return true;
-  };
-
-  let index = 0;
-  while (index < lines.length) {
-    if (truncated) break;
-    const line = lines[index];
-
-    if (/^\s*```/.test(line)) {
-      flush();
-      const language = line.trim().replace(/^```/, "").trim() || "txt";
-      const code = [];
-      index += 1;
-      while (index < lines.length && !/^\s*```/.test(lines[index])) {
-        code.push(lines[index]);
-        index += 1;
-      }
-      index += 1;
-      const source = code.join("\n");
-      if (source.trim()) {
-        const height = Math.max(140, Math.min(420, 42 + code.length * 19));
-        push(codeEditor("Code block", source, language, height, "doc_code", true));
-      }
-      continue;
-    }
-
-    if (/^\s*$/.test(line)) {
-      flush();
-      index += 1;
-      continue;
-    }
-
-    const heading = /^(#{1,4})\s+(.*)$/.exec(line);
-    if (heading) {
-      flush();
-      const level = heading[1].length;
-      push(
-        text(
-          inlineMarkdown(heading[2]),
-          level === 1 ? "title" : level === 2 ? "subtitle" : "body",
-          "ink",
-        ),
-      );
-      index += 1;
-      continue;
-    }
-
-    if (/^\s*\|/.test(line) && index + 1 < lines.length && /^[\s|:-]+$/.test(lines[index + 1])) {
-      flush();
-      const tableLines = [];
-      while (index < lines.length && /^\s*\|/.test(lines[index])) {
-        tableLines.push(lines[index]);
-        index += 1;
-      }
-      const parsed = tableLines.map((row) =>
-        row
-          .trim()
-          .replace(/^\|/, "")
-          .replace(/\|$/, "")
-          .split("|")
-          .map((cell) => inlineMarkdown(cell)),
-      );
-      if (parsed.length >= 2) {
-        const columns = parsed[0];
-        const rows = parsed
-          .slice(2)
-          .filter((row) => row.some((cell) => cell.length));
-        push(table(columns, rows));
-      }
-      continue;
-    }
-
-    if (/^\s*[-*+]\s+/.test(line)) {
-      flush();
-      push(text("• " + inlineMarkdown(line.replace(/^\s*[-*+]\s+/, "")), "small", "muted"));
-      index += 1;
-      continue;
-    }
-
-    if (/^\s*\d+\.\s+/.test(line)) {
-      flush();
-      push(text(inlineMarkdown(line), "small", "muted"));
-      index += 1;
-      continue;
-    }
-
-    if (/^\s*>\s?/.test(line)) {
-      flush();
-      push(text(inlineMarkdown(line.replace(/^\s*>\s?/, "")), "small", "muted"));
-      index += 1;
-      continue;
-    }
-
-    if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) {
-      flush();
-      index += 1;
-      continue;
-    }
-
-    paragraph.push(line.trim());
-    index += 1;
-  }
-  flush();
-  if (truncated) {
-    nodes.push(text("Document rendered partially to stay inside the node budget.", "caption", "warning"));
-  }
-  return nodes.length ? nodes : [text("This document is empty.", "body", "muted")];
-}
-
-/* ---------------------------------------------------------------------------
- * Helpers
- * ------------------------------------------------------------------------ */
-
-function provider() {
-  return state.providers[state.providerIndex] || null;
-}
-
-function chooseModel(index) {
-  const item = state.providers[index];
-  if (!item) {
-    state.model = "";
-    return;
-  }
-  const models = Array.isArray(item.models) ? item.models : [];
-  state.model = models.length ? models[0].id : "";
-}
-
-function insideRoot(relative) {
-  if (!state.root) throw new Error("The active project root is not available yet.");
-  const resolved = path.resolve(state.root, relative);
-  const rel = path.relative(state.root, resolved);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) {
-    throw new Error("Only paths inside the active project are allowed.");
-  }
-  return resolved;
-}
-
-function relativeToRoot(absolute) {
-  return path.relative(state.root, absolute).split(path.sep).join("/");
-}
-
-function languageFor(pathname) {
-  const extension = path.extname(pathname).toLowerCase().slice(1);
-  if (["js", "jsx", "mjs", "cjs"].includes(extension)) return "js";
-  if (["ts", "tsx"].includes(extension)) return "ts";
-  if (["py", "pyi"].includes(extension)) return "py";
-  if (extension === "rs") return "rs";
-  if (extension === "go") return "go";
-  if (extension === "json") return "json";
-  if (extension === "toml") return "toml";
-  if (["yaml", "yml"].includes(extension)) return "yaml";
-  if (["sh", "bash", "zsh"].includes(extension)) return "sh";
-  if (["md", "mdx"].includes(extension)) return "md";
-  return "txt";
-}
 
 function slugify(value) {
   const slug = clean(value)
@@ -390,61 +193,57 @@ function validPluginId(value) {
   return /^[A-Za-z0-9._-]{1,96}$/.test(value);
 }
 
-function scaffoldSlug() {
-  return slugify(state.scaffold.name || state.scaffold.id || "my-plugin");
+function formSlug() {
+  return slugify(state.form.name || state.form.id || "my-plugin");
 }
 
-function scaffoldId() {
-  return clean(state.scaffold.id).trim() || `com.example.${scaffoldSlug()}`;
+function formId() {
+  return clean(state.form.id).trim() || `com.example.${formSlug()}`;
 }
 
-function scaffoldTarget() {
-  return clean(state.scaffold.target).trim() || `plugin-sources/${scaffoldSlug()}`;
+function formTarget() {
+  return `plugin-sources/${formSlug()}`;
+}
+
+function insideRoot(relativePath) {
+  if (!state.root) {
+    throw new Error("The active project root is not available yet.");
+  }
+  const resolved = path.resolve(state.root, relativePath);
+  const rel = path.relative(state.root, resolved);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    throw new Error("Only paths inside the active project are allowed.");
+  }
+  return resolved;
+}
+
+function workspaceRelativePath(absolutePath) {
+  if (!absolutePath || !state.root) return "";
+  const rel = path.relative(state.root, absolutePath);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return "";
+  return rel.split(path.sep).join("/") || ".";
+}
+
+function displayPath(absolutePath) {
+  if (!absolutePath) return "none";
+  const rel = workspaceRelativePath(absolutePath);
+  if (rel) return rel;
+  return absolutePath;
+}
+
+function targetAlreadyPopulated() {
+  if (!state.root) return false;
+  try {
+    const target = insideRoot(formTarget());
+    return fs.existsSync(target) && fs.readdirSync(target).length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /* ---------------------------------------------------------------------------
- * Scaffold templates
+ * Minimal blank scaffolds
  * ------------------------------------------------------------------------ */
-
-function nodeTemplate(title) {
-  return `import readline from "node:readline";
-const SURFACE = "main";
-let events = 0;
-const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
-const tree = () => ({
-  kind: "column",
-  gap: 12,
-  children: [
-    { kind: "text", text: ${JSON.stringify(title)}, size: "title", color: "ink" },
-    { kind: "stat", label: "Events", value: String(events), color: "accent" },
-    { kind: "button", label: "Ping", handler: "ping", disabled: false },
-  ],
-});
-const publish = () =>
-  send({ jsonrpc: "2.0", method: "ui.set", params: { surface: SURFACE, tree: tree() } });
-readline.createInterface({ input: process.stdin }).on("line", (line) => {
-  if (!line.trim()) return;
-  const message = JSON.parse(line);
-  if (message.method === "initialize") {
-    respond(message.id, {
-      protocol: 1,
-      ui: [{ id: SURFACE, title: ${JSON.stringify(title)}, icon: "sparkles", order: 10 }],
-    });
-    publish();
-  } else if (message.method === "ui.open") {
-    publish();
-  } else if (message.method === "ui.event") {
-    events += 1;
-    publish();
-  } else if (message.method === "shutdown") {
-    process.exit(0);
-  }
-});
-function respond(id, result) {
-  send({ jsonrpc: "2.0", id, result });
-}
-`;
-}
 
 function pythonTemplate(title) {
   return `#!/usr/bin/env python3
@@ -452,7 +251,6 @@ import json
 import sys
 
 SURFACE = "main"
-events = 0
 
 
 def send(message):
@@ -464,16 +262,16 @@ def tree():
     return {
         "kind": "column",
         "gap": 12,
-        "children": [
-            {"kind": "text", "text": ${JSON.stringify(title)}, "size": "title", "color": "ink"},
-            {"kind": "stat", "label": "Events", "value": str(events), "color": "accent"},
-            {"kind": "button", "label": "Ping", "handler": "ping", "disabled": False},
-        ],
+        "children": [],
     }
 
 
 def publish():
     send({"jsonrpc": "2.0", "method": "ui.set", "params": {"surface": SURFACE, "tree": tree()}})
+
+
+def handle_event(handler, value):
+    pass
 
 
 for line in sys.stdin:
@@ -495,8 +293,9 @@ for line in sys.stdin:
     elif method == "ui.open":
         publish()
     elif method == "ui.event":
-        events += 1
-        publish()
+        params = message.get("params") or {}
+        if params.get("surface") == SURFACE:
+            handle_event(str(params.get("handler") or ""), params.get("value"))
     elif method == "shutdown":
         break
 `;
@@ -514,24 +313,21 @@ fn send(value: Value) {
     out.flush().unwrap();
 }
 
-fn tree(events: u64) -> Value {
+fn tree() -> Value {
     json!({
         "kind": "column",
         "gap": 12,
-        "children": [
-            {"kind": "text", "text": ${JSON.stringify(title)}, "size": "title", "color": "ink"},
-            {"kind": "stat", "label": "Events", "value": events.to_string(), "color": "accent"},
-            {"kind": "button", "label": "Ping", "handler": "ping", "disabled": false}
-        ]
+        "children": []
     })
 }
 
-fn publish(events: u64) {
-    send(json!({"jsonrpc": "2.0", "method": "ui.set", "params": {"surface": SURFACE, "tree": tree(events)}}));
+fn publish() {
+    send(json!({"jsonrpc": "2.0", "method": "ui.set", "params": {"surface": SURFACE, "tree": tree()}}));
 }
 
+fn handle_event(_handler: &str, _value: &Value) {}
+
 fn main() {
-    let mut events = 0u64;
     let stdin = io::stdin();
     for line in stdin.lock().lines().map_while(Result::ok) {
         if line.trim().is_empty() {
@@ -548,12 +344,15 @@ fn main() {
                         "ui": [{"id": SURFACE, "title": ${JSON.stringify(title)}, "icon": "sparkles", "order": 10}]
                     }
                 }));
-                publish(events);
+                publish();
             }
-            "ui.open" => publish(events),
+            "ui.open" => publish(),
             "ui.event" => {
-                events += 1;
-                publish(events);
+                let params = &message["params"];
+                if params["surface"].as_str() == Some(SURFACE) {
+                    let handler = params["handler"].as_str().unwrap_or_default();
+                    handle_event(handler, &params["value"]);
+                }
             }
             "shutdown" => break,
             _ => {}
@@ -563,187 +362,650 @@ fn main() {
 `;
 }
 
-function scaffoldFiles(slug, title, pluginId, description, language) {
-  const files = [];
-  files.push({
-    path: "plugin.json",
-    content:
-      JSON.stringify(
-        {
-          id: pluginId,
-          name: title,
-          protocol: 1,
-          command:
-            language === 0
-              ? ["node", "index.js"]
-              : language === 1
-                ? ["python3", "main.py"]
-                : [`./bin/${slug}`],
-          cwd: ".",
-          ui: [{ id: "main", title, icon: "sparkles", order: 10 }],
-        },
-        null,
-        2,
-      ) + "\n",
-  });
-  if (language === 0) {
-    files.push({ path: "index.js", content: nodeTemplate(title) });
-    files.push({
-      path: "package.json",
-      content: `${JSON.stringify({ private: true, type: "module" }, null, 2)}\n`,
+function nodeTemplate(title) {
+  return `import readline from "node:readline";
+
+const SURFACE = "main";
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\\n");
+}
+
+function respond(id, result) {
+  send({ jsonrpc: "2.0", id, result });
+}
+
+function tree() {
+  return {
+    kind: "column",
+    gap: 12,
+    children: [],
+  };
+}
+
+function publish() {
+  send({ jsonrpc: "2.0", method: "ui.set", params: { surface: SURFACE, tree: tree() } });
+}
+
+function handleEvent(_handler, _value) {}
+
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  if (!line.trim()) return;
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    respond(message.id, {
+      protocol: 1,
+      ui: [{ id: SURFACE, title: ${JSON.stringify(title)}, icon: "sparkles", order: 10 }],
     });
-  } else if (language === 1) {
-    files.push({ path: "main.py", content: pythonTemplate(title) });
+    publish();
+  } else if (message.method === "ui.open") {
+    publish();
+  } else if (message.method === "ui.event") {
+    const params = message.params || {};
+    if (params.surface === SURFACE) {
+      handleEvent(String(params.handler || ""), params.value);
+    }
+  } else if (message.method === "shutdown") {
+    process.exit(0);
+  }
+});
+`;
+}
+
+function readmeTemplate(title, spec) {
+  const sections = [`# ${title}`];
+  if (spec.purpose) {
+    sections.push(`## What It Does\n\n${spec.purpose}`);
   } else {
+    sections.push("Scaffolded with Monocode Plugin Authoring.");
+  }
+  if (spec.successCriteria) {
+    sections.push(`## Success Criteria\n\n${spec.successCriteria}`);
+  }
+  if (spec.constraints) {
+    sections.push(`## Constraints\n\n${spec.constraints}`);
+  }
+  sections.push(
+    "## Build and Launch\n\n```sh\nnpm run plugins:build\nnpm run plugins\n```\n\nRestart Monocode after changing the manifest or rebuilding the package.",
+  );
+  return sections.join("\n\n") + "\n";
+}
+
+function scaffoldFiles(slug, title, pluginId, spec, languageIndex) {
+  const command =
+    languageIndex === 0
+      ? ["python3", "main.py"]
+      : languageIndex === 1
+        ? [`./bin/${slug}`]
+        : ["node", "index.js"];
+
+  const files = [
+    {
+      path: "plugin.json",
+      role: `manifest (${pluginId})`,
+      content:
+        JSON.stringify(
+          {
+            id: pluginId,
+            name: title,
+            protocol: 1,
+            command,
+            cwd: ".",
+            ui: [{ id: "main", title, icon: "sparkles", order: 10 }],
+          },
+          null,
+          2,
+        ) + "\n",
+    },
+  ];
+
+  if (languageIndex === 0) {
+    files.push({
+      path: "main.py",
+      role: "Python entrypoint",
+      content: pythonTemplate(title),
+    });
+  } else if (languageIndex === 1) {
     files.push({
       path: "Cargo.toml",
+      role: "Cargo package",
       content: `[package]\nname = "${slug}"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\nserde_json = "1"\n\n[workspace]\n`,
     });
-    files.push({ path: "src/main.rs", content: rustTemplate(title) });
+    files.push({
+      path: "src/main.rs",
+      role: "Rust entrypoint",
+      content: rustTemplate(title),
+    });
+  } else {
+    files.push({
+      path: "package.json",
+      role: "ESM package",
+      content: `${JSON.stringify({ private: true, type: "module" }, null, 2)}\n`,
+    });
+    files.push({
+      path: "index.js",
+      role: "Node.js entrypoint",
+      content: nodeTemplate(title),
+    });
   }
+
   files.push({
     path: "README.md",
-    content: `# ${title}\n\n${description || "Generated by the Monocode Plugin Authoring Station."}\n\n## Build and test\n\n\`\`\`sh\nnpm run plugins:build\nnpm run plugins\n\`\`\`\n\nRestart Monocode after changing protocol code or the manifest. The plugin speaks\nJSON-RPC 2.0 over newline-delimited stdin/stdout and publishes native UI trees.\n`,
+    role: "spec and build notes",
+    content: readmeTemplate(title, spec),
   });
+
   return files;
 }
 
-function createScaffold() {
+/* ---------------------------------------------------------------------------
+ * Authoring prompt template
+ * ------------------------------------------------------------------------ */
+
+function buildAuthoringPrompt(info) {
+  const fileLines = info.files.map((item) => `- ${item}`).join("\n");
+  const purpose =
+    info.purpose && info.purpose.trim()
+      ? info.purpose.trim()
+      : "Not provided yet. Ask the user what they want this plugin to do.";
+  const successCriteria =
+    info.successCriteria && info.successCriteria.trim()
+      ? info.successCriteria.trim()
+      : "Not provided yet. Confirm with the user how we will verify the plugin works as intended.";
+  const constraints =
+    info.constraints && info.constraints.trim()
+      ? info.constraints.trim()
+      : "None specified.";
+
+  const intro = info.created
+    ? `A basic Monocode plugin scaffold has been generated in \`${info.dir}\`. Your objective is to work with the user and build this plugin for them, under their guidance.`
+    : `We are working on the Monocode plugin in \`${info.dir}\`. Your objective is to work with the user and build or refine this plugin for them, under their guidance.`;
+
+  return [
+    intro,
+    "",
+    "## Plugin Details",
+    `- Name: ${info.title}`,
+    `- Identifier: ${info.id}`,
+    `- Language: ${info.language}`,
+    `- Scaffold directory: ${info.dir}`,
+    "- Files:",
+    fileLines,
+    "",
+    "## What the Plugin Should Do",
+    purpose,
+    "",
+    "## How We Will Know It Works as Intended",
+    successCriteria,
+    "",
+    "## What to Avoid / Constraints",
+    constraints,
+    "",
+    "## Monocode Plugin Contract (Protocol v1)",
+    "- Each plugin is a standalone OS child process launched from `plugin.json` (`command` and `cwd`).",
+    "- Transport is newline-delimited JSON-RPC 2.0 over `stdin` and `stdout`.",
+    "- `stdout` carries compact JSON-RPC messages only (one JSON object per line, max 2 MiB). Write all logs and diagnostics to `stderr`.",
+    "- Lifecycle messages sent by Monocode:",
+    "  1. `initialize` (request with `id`): reply within 5 seconds with `{\"protocol\": 1, \"ui\": [{\"id\": \"main\", \"title\": \"...\", \"icon\": \"sparkles\", \"order\": 10}]}`.",
+    "  2. `ui.open` (notification `{\"surface\": \"main\"}`): send a `ui.set` notification containing the declarative UI tree.",
+    "  3. `ui.event` (notification `{\"surface\": \"main\", \"handler\": \"...\", \"value\": ...}`): update plugin state and publish a new `ui.set`.",
+    "  4. `ui.close` (notification `{\"surface\": \"main\"}`): surface hidden; process stays alive.",
+    "  5. `shutdown` (notification): exit cleanly with code 0.",
+    "- Declarative native UI (`ui.set` notification `{\"surface\": \"<id>\", \"tree\": <Node>}`):",
+    "  - Native GPUI component tree (no HTML, CSS, or WebView; max 512 nodes, depth 16, 1 MiB JSON).",
+    "  - Layout nodes: `column` (`gap`, optional `weight`, `children`), `row` (`gap`, `children`), `grid` (`columns`, `gap`, `children`), `card` (`gap`, `children`), `spacer`, `page_tabs` (`labels`, `selected`, `handler`, `nav_width`, `children`).",
+    "  - Display nodes: `text` (`text`, `size`: `caption|small|body|subtitle|title|hero`, `color`: `ink|muted|faint|accent|positive|negative|warning|series1..series6`, optional `monospace`), `stat` (`label`, `value`, optional `detail`, `color`), `table` (`columns`, `rows`, optional `weights`, optional `selected` + `handler`), `chart` (`chart_type`: `bar|line|area`, `labels`, `series`, `height`), `donut`, `gauge`, `heatmap`, `progress`.",
+    "  - Control nodes: `button` (`label`, `handler`, `disabled`), `toggle` (`label`, `value`, `handler`), `input` (`label`, `value`, `placeholder`, `handler`, optional `submit_handler`), `select` (`label`, `options`, `selected`, `handler`), `slider` (`label`, `value`, `min`, `max`, `step`, `handler`), `tabs` (`labels`, `selected`, `handler`), `code_editor` (`label`, `value`, `language`, `height`, `handler`, `read_only`, optional `submit_handler`, `selection_handler`, `context_menu`).",
+    "  - Visible field labels: `input`, `select`, and `code_editor` use `label` for accessibility only; place a `caption` `text` node above them when a visible label is needed.",
+    "- Host API requests (plugin sends JSON-RPC request with `id` to Monocode):",
+    "  - `workspace.info` -> `{\"root\", \"name\"}`",
+    "  - `storage.get` (`{\"key\"}`) and `storage.set` (`{\"key\", \"value\"}`) -> plugin-scoped JSON store (1 MiB cap)",
+    "  - `host.describe` -> protocol, methods, features, limits, and `pluginDir`",
+    "  - `llm.providers` and `llm.complete` -> read-only background text completions",
+    "  - `session.start` (`{\"prompt\", \"title\"}`) -> start a workspace chat session",
+    "- Build and launch:",
+    "  - Run `npm run plugins:build` to build `plugin-sources/*` into runnable packages under `plugins/` (or place the runnable package directory inside `MONOCODE_PLUGIN_DIR` / `<app-data-dir>/plugins/`).",
+    "  - Launch with `npm run plugins` (or restart Monocode after manifest or binary changes).",
+    "",
+    "## Reference Documentation (GitHub)",
+    `- Repository (${REPO_BRANCH} branch): ${TREE_BASE_URL}`,
+    `- Plugin overview: ${DOCS_BASE_URL}/plugins/README.md`,
+    `- Wire protocol and UI nodes: ${DOCS_BASE_URL}/plugins/PROTOCOL.md`,
+    `- Host API reference: ${DOCS_BASE_URL}/plugins/HOST_API.md`,
+    `- Architecture: ${DOCS_BASE_URL}/plugins/ARCHITECTURE.md`,
+    `- Example plugin sources: ${TREE_BASE_URL}/plugin-sources`,
+    "",
+    "## Next Steps",
+    `Inspect the minimal blank scaffold in \`${info.dir}\` and perform these steps before writing feature code:`,
+    "1. **Analyze the requirements:** Review what the plugin should do, the success criteria, and the constraints above, and call out any ambiguities or open questions.",
+    "2. **Check existing Monocode features:** Analyze whether Monocode already has a feature like this (or overlaps with existing built-in capabilities) so the plugin adds distinct value rather than duplicating native functionality.",
+    "3. **Assess plugin feasibility:** Analyze whether Monocode's plugin architecture (protocol v1 over stdio, available declarative native UI nodes, and host API methods) can support this kind of plugin cleanly, noting any constraints or tradeoffs up front.",
+    "4. **Formulate and present an implementation plan:** Present a clear, step-by-step implementation plan to the user in concise, plain, everyday language, and wait for their guidance before implementing.",
+  ].join("\n");
+}
+
+/* ---------------------------------------------------------------------------
+ * Plugin detection
+ * ------------------------------------------------------------------------ */
+
+function listRelativeFiles(dir, prefix = "", out = []) {
+  if (out.length >= 16) return out;
+  let entries = [];
   try {
-    const slug = scaffoldSlug();
-    const title = clean(state.scaffold.name).trim() || slug;
-    const pluginId = scaffoldId();
-    if (!validPluginId(pluginId)) {
-      throw new Error("Plugin id must use 1–96 letters, digits, dots, underscores, or hyphens.");
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    if (out.length >= 16) break;
+    if (
+      entry.name === ".git" ||
+      entry.name === "target" ||
+      entry.name === "node_modules" ||
+      entry.name === "__pycache__" ||
+      entry.name.startsWith(".")
+    ) {
+      continue;
     }
-    const targetInput = scaffoldTarget().replace(/\\/g, "/");
-    const target = insideRoot(targetInput);
-    if (fs.existsSync(target) && fs.readdirSync(target).length > 0) {
-      throw new Error(`Refusing to overwrite non-empty directory: ${targetInput}`);
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      listRelativeFiles(path.join(dir, entry.name), rel, out);
+    } else if (entry.isFile()) {
+      out.push(rel);
     }
-    fs.mkdirSync(target, { recursive: true });
-    const files = scaffoldFiles(
-      slug,
-      title,
-      pluginId,
-      clean(state.scaffold.description).trim(),
-      state.scaffold.language,
-    );
+  }
+  return out;
+}
+
+function detectLanguage(dir, manifest) {
+  if (dir) {
+    if (fs.existsSync(path.join(dir, "Cargo.toml"))) return "Rust";
+    if (fs.existsSync(path.join(dir, "main.py"))) return "Python";
+    if (
+      fs.existsSync(path.join(dir, "index.js")) ||
+      fs.existsSync(path.join(dir, "package.json"))
+    ) {
+      return "Node.js";
+    }
+  }
+  const cmd =
+    manifest && Array.isArray(manifest.command) && manifest.command.length
+      ? String(manifest.command[0])
+      : "";
+  if (/python/i.test(cmd)) return "Python";
+  if (/node/i.test(cmd)) return "Node.js";
+  if (cmd.includes("/bin/") || cmd.startsWith("./bin/")) return "Rust / Binary";
+  return cmd ? path.basename(cmd) : "unknown";
+}
+
+function readManifestDir(dir) {
+  const manifestPath = path.join(dir, "plugin.json");
+  if (!fs.existsSync(manifestPath)) {
+    return { manifest: null, error: "Missing plugin.json" };
+  }
+  try {
+    const raw = fs.readFileSync(manifestPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return { manifest: null, error: "Manifest is not an object" };
+    }
+    if (!parsed.id || !parsed.name || !Array.isArray(parsed.command) || !parsed.command.length) {
+      return { manifest: null, error: "Manifest requires id, name, and command" };
+    }
+    return { manifest: parsed, error: "" };
+  } catch (error) {
+    return { manifest: null, error: `Invalid plugin.json: ${error.message}` };
+  }
+}
+
+function childDirectories(rootDir) {
+  if (!rootDir || !fs.existsSync(rootDir)) return [];
+  try {
+    return fs
+      .readdirSync(rootDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+      .map((entry) => ({
+        folder: entry.name,
+        fullPath: path.join(rootDir, entry.name),
+      }))
+      .sort((a, b) => a.folder.localeCompare(b.folder));
+  } catch {
+    return [];
+  }
+}
+
+function runtimeCommandExists(dir, manifest) {
+  if (!dir || !manifest || !Array.isArray(manifest.command) || !manifest.command.length) {
+    return false;
+  }
+  const bin = String(manifest.command[0]);
+  if (bin.startsWith("./") || bin.startsWith("../") || bin.includes("/")) {
+    const cwd = manifest.cwd ? path.resolve(dir, String(manifest.cwd)) : dir;
+    return fs.existsSync(path.resolve(cwd, bin));
+  }
+  const scriptArg = manifest.command[1] ? String(manifest.command[1]) : "";
+  if (scriptArg && !scriptArg.startsWith("-")) {
+    const cwd = manifest.cwd ? path.resolve(dir, String(manifest.cwd)) : dir;
+    return fs.existsSync(path.resolve(cwd, scriptArg));
+  }
+  return true;
+}
+
+function parseReadmeSections(readmePath) {
+  const out = { purpose: "", successCriteria: "", constraints: "" };
+  if (!fs.existsSync(readmePath)) return out;
+  try {
+    const lines = fs.readFileSync(readmePath, "utf8").split("\n");
+    let current = "intro";
+    const buckets = { intro: [], purpose: [], successCriteria: [], constraints: [] };
+    for (const line of lines) {
+      const heading = /^##\s+(.*)$/.exec(line.trim());
+      if (heading) {
+        const label = heading[1].toLowerCase();
+        if (label.includes("what it does")) current = "purpose";
+        else if (label.includes("success")) current = "successCriteria";
+        else if (label.includes("constraint") || label.includes("avoid")) current = "constraints";
+        else current = "other";
+        continue;
+      }
+      if (line.trim().startsWith("# ")) continue;
+      if (buckets[current]) buckets[current].push(line);
+    }
+    const cleanBlock = (arr) => arr.join("\n").trim().slice(0, 2000);
+    out.purpose = cleanBlock(buckets.purpose) || cleanBlock(buckets.intro);
+    out.successCriteria = cleanBlock(buckets.successCriteria);
+    out.constraints = cleanBlock(buckets.constraints);
+    return out;
+  } catch {
+    return out;
+  }
+}
+
+function scanPlugins() {
+  const byKey = new Map();
+
+  const sourcesRoot = state.root ? path.join(state.root, "plugin-sources") : "";
+  for (const item of childDirectories(sourcesRoot)) {
+    const info = readManifestDir(item.fullPath);
+    const key = info.manifest && info.manifest.id ? info.manifest.id : `folder:${item.folder}`;
+    byKey.set(key, {
+      key,
+      folder: item.folder,
+      sourceDir: item.fullPath,
+      sourceManifest: info.manifest,
+      sourceError: info.error,
+      runtimeDir: "",
+      runtimeManifest: null,
+      runtimeError: "",
+    });
+  }
+
+  const fallbackRuntime = state.root ? path.join(state.root, "plugins") : "";
+  const runtimeRoot = state.pluginDir || fallbackRuntime;
+  if (runtimeRoot && fs.existsSync(runtimeRoot)) {
+    const rootManifest = path.join(runtimeRoot, "plugin.json");
+    const runtimeDirs = fs.existsSync(rootManifest)
+      ? [{ folder: path.basename(runtimeRoot), fullPath: runtimeRoot }]
+      : childDirectories(runtimeRoot);
+
+    for (const item of runtimeDirs) {
+      const info = readManifestDir(item.fullPath);
+      const key =
+        info.manifest && info.manifest.id ? info.manifest.id : `folder:${item.folder}`;
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.runtimeDir = item.fullPath;
+        existing.runtimeManifest = info.manifest;
+        existing.runtimeError = info.error;
+      } else {
+        byKey.set(key, {
+          key,
+          folder: item.folder,
+          sourceDir: "",
+          sourceManifest: null,
+          sourceError: "",
+          runtimeDir: item.fullPath,
+          runtimeManifest: info.manifest,
+          runtimeError: info.error,
+        });
+      }
+    }
+  }
+
+  const list = [];
+  for (const entry of byKey.values()) {
+    const manifest = entry.sourceManifest || entry.runtimeManifest;
+    const primaryDir = entry.sourceDir || entry.runtimeDir;
+    const error = entry.sourceError || entry.runtimeError;
+    const uiList = manifest && Array.isArray(manifest.ui) ? manifest.ui : [];
+    const firstSurface = uiList[0] || null;
+    const order =
+      firstSurface && typeof firstSurface.order === "number"
+        ? firstSurface.order
+        : Number.MAX_SAFE_INTEGER;
+    const surfaceLabel = uiList.length
+      ? uiList
+          .map((surface) =>
+            typeof surface.order === "number"
+              ? `${surface.title || surface.id} (#${surface.order})`
+              : String(surface.title || surface.id || "surface"),
+          )
+          .join(", ")
+      : "none";
+
+    let status = "invalid";
+    if (!error && manifest) {
+      const readyInRuntime =
+        Boolean(entry.runtimeDir) &&
+        !entry.runtimeError &&
+        runtimeCommandExists(entry.runtimeDir, entry.runtimeManifest || manifest);
+      if (entry.sourceDir && readyInRuntime) {
+        status = "built";
+      } else if (entry.sourceDir && !entry.runtimeDir) {
+        status = "source";
+      } else if (!entry.sourceDir && readyInRuntime) {
+        status = "runtime";
+      } else if (entry.runtimeDir && !readyInRuntime) {
+        status = "missing binary";
+      }
+    }
+
+    const language = detectLanguage(entry.sourceDir || entry.runtimeDir, manifest);
+    const command =
+      manifest && Array.isArray(manifest.command)
+        ? manifest.command.join(" ")
+        : "none";
+    const relFiles = primaryDir ? listRelativeFiles(primaryDir) : [];
+    const readmeSpec = primaryDir
+      ? parseReadmeSections(path.join(primaryDir, "README.md"))
+      : { purpose: "", successCriteria: "", constraints: "" };
+    const workspaceRel = workspaceRelativePath(primaryDir);
+
+    list.push({
+      folder: entry.folder,
+      name: manifest ? String(manifest.name) : entry.folder,
+      id: manifest ? String(manifest.id) : "invalid",
+      language,
+      surface: surfaceLabel,
+      order,
+      status,
+      command,
+      sourceDir: entry.sourceDir,
+      runtimeDir: entry.runtimeDir,
+      primaryDir,
+      workspaceRel,
+      files: relFiles,
+      readmeSpec,
+      error,
+    });
+  }
+
+  list.sort((a, b) => {
+    if (a.order !== b.order) return a.order - b.order;
+    return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+  });
+
+  state.plugins = list;
+  if (state.selectedPlugin >= state.plugins.length) {
+    state.selectedPlugin = Math.max(0, state.plugins.length - 1);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Actions
+ * ------------------------------------------------------------------------ */
+
+function startSessionForPlugin(info, resetFormOnSuccess = false) {
+  if (state.starting) return;
+  state.starting = true;
+  state.status = "";
+  publish();
+
+  const prompt = buildAuthoringPrompt(info);
+  request(
+    "session.start",
+    {
+      title: `Plugin: ${info.title}`,
+      prompt,
+    },
+    (_result, error) => {
+      state.starting = false;
+      if (error) {
+        state.status = `Error: ${error.message || "Could not start authoring session."}`;
+      } else {
+        if (resetFormOnSuccess) {
+          state.form.name = "";
+          state.form.id = "";
+          state.form.purpose = "";
+          state.form.successCriteria = "";
+          state.form.constraints = "";
+        }
+        state.status = `Created ${info.dir} and started session.`;
+      }
+      publish();
+    },
+  );
+}
+
+function createAndStart() {
+  if (state.starting) return;
+  const rawName = clean(state.form.name).trim();
+  if (!rawName) {
+    state.status = "Error: Enter a plugin name.";
+    publish();
+    return;
+  }
+
+  const slug = formSlug();
+  const pluginId = formId();
+  if (!validPluginId(pluginId)) {
+    state.status =
+      "Error: Identifier must use 1-96 letters, digits, dots, underscores, or hyphens.";
+    publish();
+    return;
+  }
+
+  const targetRel = formTarget();
+  let targetAbs;
+  try {
+    targetAbs = insideRoot(targetRel);
+  } catch (error) {
+    state.status = `Error: ${error.message}`;
+    publish();
+    return;
+  }
+
+  if (fs.existsSync(targetAbs) && fs.readdirSync(targetAbs).length > 0) {
+    state.status = `Error: Directory already exists and is not empty: ${targetRel}`;
+    publish();
+    return;
+  }
+
+  const spec = {
+    purpose: clean(state.form.purpose).trim(),
+    successCriteria: clean(state.form.successCriteria).trim(),
+    constraints: clean(state.form.constraints).trim(),
+  };
+  const languageIndex = state.form.language;
+  const languageName = LANGUAGES[languageIndex] || LANGUAGES[0];
+  const files = scaffoldFiles(slug, rawName, pluginId, spec, languageIndex);
+
+  try {
+    fs.mkdirSync(targetAbs, { recursive: true });
     for (const file of files) {
-      const destination = path.join(target, file.path);
+      const destination = path.join(targetAbs, file.path);
       fs.mkdirSync(path.dirname(destination), { recursive: true });
       fs.writeFileSync(destination, file.content);
       if (file.path.endsWith(".py") || file.path.endsWith(".js")) {
         fs.chmodSync(destination, 0o755);
       }
     }
-    const mainFile =
-      state.scaffold.language === 0
-        ? "index.js"
-        : state.scaffold.language === 1
-          ? "main.py"
-          : "src/main.rs";
-    state.scaffold.files = files.map((file) => ({
-      path: path.posix.join(targetInput, file.path),
-      bytes: Buffer.byteLength(file.content),
-    }));
-    state.scaffold.dir = targetInput;
-    state.scaffold.mainFile = path.posix.join(targetInput, mainFile);
-    state.scaffold.step = 3;
-    state.editor.path = state.scaffold.mainFile;
-    state.editor.content = fs.readFileSync(path.join(target, mainFile), "utf8");
-    state.editor.language = languageFor(mainFile);
-    state.editor.dirty = false;
-    state.status = `Created ${files.length} files.`;
   } catch (error) {
     state.status = `Error: ${error.message}`;
-  }
-  publish();
-}
-
-function loadEditor() {
-  try {
-    const absolute = insideRoot(state.editor.path.trim());
-    const info = fs.statSync(absolute);
-    if (!info.isFile()) throw new Error("Path is not a file.");
-    if (info.size > 64 * 1024) throw new Error("File is larger than 64 KB.");
-    state.editor.content = fs.readFileSync(absolute, "utf8");
-    state.editor.language = languageFor(absolute);
-    state.editor.dirty = false;
-    state.status = `Loaded ${relativeToRoot(absolute)}`;
-  } catch (error) {
-    state.status = `Error: ${error.message}`;
-  }
-  publish();
-}
-
-function saveEditor() {
-  try {
-    const absolute = insideRoot(state.editor.path.trim());
-    fs.mkdirSync(path.dirname(absolute), { recursive: true });
-    fs.writeFileSync(absolute, state.editor.content);
-    state.editor.dirty = false;
-    state.status = `Saved ${relativeToRoot(absolute)}`;
-  } catch (error) {
-    state.status = `Error: ${error.message}`;
-  }
-  publish();
-}
-
-function generate() {
-  if (state.generating) return;
-  if (!state.prompt.trim()) {
-    state.status = "Enter a prompt.";
     publish();
     return;
   }
-  const active = provider();
-  if (!active && state.providers.length) {
-    state.status = "Select a provider.";
+
+  scanPlugins();
+  const createdIndex = state.plugins.findIndex((item) => item.id === pluginId);
+  if (createdIndex >= 0) state.selectedPlugin = createdIndex;
+
+  startSessionForPlugin(
+    {
+      title: rawName,
+      id: pluginId,
+      language: languageName,
+      dir: targetRel,
+      files: files.map((file) => `${targetRel}/${file.path}`),
+      purpose: spec.purpose,
+      successCriteria: spec.successCriteria,
+      constraints: spec.constraints,
+      created: true,
+    },
+    true,
+  );
+}
+
+function openSelectedPluginSession() {
+  if (state.starting) return;
+  const selected = state.plugins[state.selectedPlugin];
+  if (!selected || !selected.workspaceRel) {
+    state.status =
+      "Error: Select a plugin located inside the active workspace.";
     publish();
     return;
   }
-  state.generating = true;
-  state.status = "";
-  const params = {
-    prompt: state.prompt.slice(0, 64 * 1024),
-    system: state.system.slice(0, 16 * 1024),
-  };
-  if (active) params.provider = active.id;
-  if (state.model.trim()) params.model = state.model.trim();
-  request("llm.complete", params, (result, error) => {
-    state.generating = false;
-    if (error) {
-      state.status = `Error: ${error.message || "completion failed"}`;
-    } else {
-      state.response = clean(result && result.text ? result.text : "").slice(0, 32 * 1024);
-      state.status = state.response ? "" : "No text returned.";
-    }
-    publish();
-  });
-  publish();
+  const relDir = selected.workspaceRel;
+  const files = selected.files.length
+    ? selected.files.map((item) => `${relDir}/${item}`)
+    : [`${relDir}/plugin.json`];
+
+  startSessionForPlugin(
+    {
+      title: selected.name,
+      id: selected.id,
+      language: selected.language,
+      dir: relDir,
+      files,
+      purpose: selected.readmeSpec.purpose,
+      successCriteria: selected.readmeSpec.successCriteria,
+      constraints: selected.readmeSpec.constraints,
+      created: false,
+    },
+    false,
+  );
 }
 
-function refreshApi() {
-  request("host.describe", {}, (result, error) => {
-    if (error) {
-      state.describeError = error.message || "host.describe failed";
-    } else {
-      state.describe = result;
-      state.describeError = "";
-    }
+function refreshWorkspaceAndHost() {
+  request("workspace.info", {}, (result) => {
+    state.root = result && result.root ? String(result.root) : "";
+    scanPlugins();
     publish();
   });
-  request("llm.providers", {}, (result, error) => {
-    if (error) {
-      state.providersError = error.message || "llm.providers failed";
-      state.providers = [];
-    } else {
-      state.providers = Array.isArray(result && result.providers) ? result.providers : [];
-      state.providersError = "";
-      state.providerIndex = Math.max(0, Math.min(state.providerIndex, state.providers.length - 1));
-      if (!state.model) chooseModel(state.providerIndex);
-    }
+  request("host.describe", {}, (result) => {
+    state.pluginDir = result && result.pluginDir ? String(result.pluginDir) : "";
+    scanPlugins();
     publish();
   });
 }
@@ -753,365 +1015,257 @@ function refreshApi() {
  * ------------------------------------------------------------------------ */
 
 function handleEvent(handler, value) {
-  let republish = true;
   switch (handler) {
     case "tab":
       state.tab = Math.max(0, Math.min(TABS.length - 1, Number(value) || 0));
       state.status = "";
+      if (state.tab === 1) scanPlugins();
+      publish();
       break;
-    case "scaffold_name":
-      state.scaffold.name = clip(value, 80);
-      republish = false;
+    case "name":
+      state.form.name = clip(value, 80);
+      publish();
       break;
-    case "scaffold_id":
-      state.scaffold.id = clip(value, 96);
-      republish = false;
+    case "id":
+      state.form.id = clip(value, 96);
+      publish();
       break;
-    case "scaffold_description":
-      state.scaffold.description = clip(value, 500);
-      republish = false;
+    case "language":
+      state.form.language = Math.max(
+        0,
+        Math.min(LANGUAGES.length - 1, Number(value) || 0),
+      );
+      publish();
       break;
-    case "scaffold_target":
-      state.scaffold.target = clip(value, 512);
-      republish = false;
+    case "purpose":
+      state.form.purpose = clip(value, 8000);
       break;
-    case "scaffold_next":
-      if (state.scaffold.step === 0) {
-        state.scaffold.name =
-          clean(state.scaffold.name).trim() || "My Plugin";
-        if (!clean(state.scaffold.id).trim()) {
-          state.scaffold.id = `com.example.${slugify(state.scaffold.name)}`;
-        }
-        if (!clean(state.scaffold.target).trim()) {
-          state.scaffold.target = `plugin-sources/${slugify(state.scaffold.name)}`;
-        }
-        state.scaffold.step = 1;
-      } else if (state.scaffold.step === 1) {
-        state.scaffold.step = 2;
-      }
+    case "success_criteria":
+      state.form.successCriteria = clip(value, 8000);
       break;
-    case "scaffold_back":
-      state.scaffold.step = Math.max(0, state.scaffold.step - 1);
+    case "constraints":
+      state.form.constraints = clip(value, 8000);
       break;
-    case "scaffold_create":
-      createScaffold();
-      republish = false;
+    case "create_and_start":
+      createAndStart();
       break;
-    case "scaffold_open":
-      if (state.scaffold.mainFile) {
-        state.editor.path = state.scaffold.mainFile;
-        loadEditor();
-        state.tab = 4;
-      }
-      break;
-    case "scaffold_reset":
-      state.scaffold = {
-        step: 0,
+    case "reset":
+      state.form = {
         name: "",
         id: "",
-        description: "",
-        language: state.scaffold.language,
-        target: "",
-        files: [],
-        dir: "",
-        mainFile: "",
+        language: state.form.language,
+        purpose: "",
+        successCriteria: "",
+        constraints: "",
       };
       state.status = "";
+      publish();
       break;
-    case "model":
-      state.model = clip(value, 200);
-      republish = false;
-      break;
-    case "system":
-      state.system = clip(value, 16 * 1024);
-      republish = false;
-      break;
-    case "prompt":
-      state.prompt = clip(value, 64 * 1024);
-      republish = false;
-      break;
-    case "generate":
-      generate();
-      republish = false;
-      break;
-    case "clear":
-      state.prompt = "";
-      state.response = "";
+    case "select_plugin":
+      state.selectedPlugin = Math.max(
+        0,
+        Math.min(state.plugins.length - 1, Number(value) || 0),
+      );
       state.status = "";
+      publish();
       break;
-    case "use_response":
-      if (!state.response.trim()) {
-        state.status = "No response.";
-      } else {
-        state.editor.content = state.response;
-        state.editor.dirty = true;
-        state.tab = 4;
-        state.status = "Response copied.";
-      }
+    case "rescan":
+      state.status = "";
+      scanPlugins();
+      publish();
       break;
-    case "editor_path":
-      state.editor.path = clip(value, 512);
-      republish = false;
-      break;
-    case "editor_content":
-      state.editor.content = clip(value, 64 * 1024);
-      state.editor.dirty = true;
-      republish = false;
-      break;
-    case "editor_load":
-      loadEditor();
-      republish = false;
-      break;
-    case "editor_save":
-      saveEditor();
-      republish = false;
-      break;
-    case "refresh_api":
-      refreshApi();
-      republish = false;
-      break;
-    case "doc_code":
-    case "response_view":
-      republish = false;
+    case "open_plugin_session":
+      openSelectedPluginSession();
       break;
     default:
       break;
   }
-  if (republish) publish();
 }
 
 /* ---------------------------------------------------------------------------
  * Pages
  * ------------------------------------------------------------------------ */
 
-function guideTab() {
-  if (!state.docs.length) {
-    return text("No docs available.", "body", "warning");
-  }
-  return {
-    kind: "column",
-    gap: 12,
-    children: state.docs.flatMap((doc) => markdownNodes(doc.content)),
+function newPluginPage() {
+  const slug = formSlug();
+  const title = clean(state.form.name).trim() || "My Plugin";
+  const pluginId = formId();
+  const targetRel = formTarget();
+  const spec = {
+    purpose: clean(state.form.purpose).trim(),
+    successCriteria: clean(state.form.successCriteria).trim(),
+    constraints: clean(state.form.constraints).trim(),
   };
-}
+  const preview = scaffoldFiles(
+    slug,
+    title,
+    pluginId,
+    spec,
+    state.form.language,
+  ).map((file) => [`${targetRel}/${file.path}`, file.role]);
 
-function apiTab() {
-  const describe = state.describe || {};
-  const methods = Array.isArray(describe.methods)
-    ? describe.methods
-    : Object.keys(METHOD_NOTES);
-  const limits = describe.limits || {};
-  const features = describe.features || {};
-  const methodRows = methods.map((method) => [
-    method,
-    METHOD_NOTES[method] || "Host request.",
-  ]);
-  const limitRows = Object.entries(limits)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, value]) => [name, String(value)]);
-  const featureRows = Object.entries(features).map(([name, value]) => [
-    name,
-    value ? "available" : "unavailable",
-  ]);
-  const providerRows = state.providers.map((item) => [
-    item.label,
-    item.account || "default",
-    `${item.models ? item.models.length : 0} models`,
-    item.background ? "background" : "",
-  ]);
+  const exists = targetAlreadyPopulated();
   const children = [
-    section("Methods", [table(["Method", "Returns"], methodRows)]),
-    section("Limits", [
-      limitRows.length
-        ? table(["Limit", "Value"], limitRows)
-        : text("Not reported.", "body", "muted"),
+    section("Identity", [
+      field(
+        "Plugin name",
+        inputNode("Plugin name", state.form.name, "Port Inspector", "name"),
+      ),
+      field(
+        "Identifier",
+        inputNode("Identifier", state.form.id, `com.example.${slug}`, "id"),
+      ),
+      field(
+        "Language",
+        selectNode("Language", LANGUAGES, state.form.language, "language"),
+      ),
     ]),
-    section("Features", [
-      featureRows.length
-        ? table(["Feature", "Status"], featureRows)
-        : text("Not reported.", "body", "muted"),
+    section("Authoring Brief", [
+      field(
+        "What should the plugin do?",
+        codeEditor(
+          "What should the plugin do?",
+          state.form.purpose,
+          "md",
+          110,
+          "purpose",
+        ),
+      ),
+      field(
+        "How will you know it works as intended?",
+        codeEditor(
+          "How will you know it works as intended?",
+          state.form.successCriteria,
+          "md",
+          96,
+          "success_criteria",
+        ),
+      ),
+      field(
+        "Anything you want to avoid or not do?",
+        codeEditor(
+          "Anything you want to avoid or not do?",
+          state.form.constraints,
+          "md",
+          96,
+          "constraints",
+        ),
+      ),
     ]),
-    section("Providers", [
-      state.providersError
-        ? text(state.providersError, "small", "warning")
-        : providerRows.length
-          ? table(["Provider", "Account", "Models", "Role"], providerRows)
-          : text("No provider installed.", "body", "muted"),
+    section("Scaffold Preview", [
+      table(["Path", "Role"], preview, [2.2, 1.0]),
+      ...(exists
+        ? [
+            text(
+              `Directory already exists: ${targetRel}. Choose another name or open it from Plugins.`,
+              "small",
+              "warning",
+            ),
+          ]
+        : []),
+    ]),
+    row([
+      button(
+        state.starting ? "Starting session..." : "Create & Start Session",
+        "create_and_start",
+        state.starting || !state.root || exists,
+      ),
+      button("Reset", "reset", state.starting),
     ]),
   ];
-  if (state.describeError) {
-    children.push(section("Error", [text(state.describeError, "body", "warning")]));
-  }
+
   return { kind: "column", gap: 18, children };
 }
 
-function scaffoldSummaryRows() {
-  return [
-    ["Name", clean(state.scaffold.name).trim() || "My Plugin"],
-    ["Plugin id", scaffoldId()],
-    ["Language", LANGUAGES[state.scaffold.language]],
-    ["Target", scaffoldTarget()],
-    ["Description", clean(state.scaffold.description).trim() || "—"],
-  ];
-}
+function pluginsPage() {
+  const plugins = state.plugins;
+  const builtCount = plugins.filter(
+    (item) => item.status === "built" || item.status === "runtime",
+  ).length;
 
-function scaffoldPreviewFiles() {
-  const language = state.scaffold.language;
-  const target = scaffoldTarget().replace(/\\/g, "/");
-  const files = ["plugin.json", "README.md"];
-  if (language === 0) files.push("index.js", "package.json");
-  else if (language === 1) files.push("main.py");
-  else files.push("Cargo.toml", "src/main.rs");
-  return files.map((file) => [path.posix.join(target, file), "generated"]);
-}
+  const header = row([
+    text(
+      `${plugins.length} detected · ${builtCount} ready`,
+      "small",
+      "muted",
+    ),
+    { kind: "spacer" },
+    button("Rescan", "rescan"),
+  ]);
 
-function scaffoldStep() {
-  const step = state.scaffold.step;
-  if (step === 0) {
+  if (!plugins.length) {
     return {
       kind: "column",
-      gap: 12,
+      gap: 14,
       children: [
-        inputNode("Display name", state.scaffold.name, "My Plugin", "scaffold_name"),
-        inputNode("Plugin id", state.scaffold.id, "com.example.my-plugin", "scaffold_id"),
-        inputNode(
-          "Description",
-          state.scaffold.description,
-          "What the plugin does",
-          "scaffold_description",
+        header,
+        text(
+          "No plugins found in plugin-sources/ or the active plugins directory.",
+          "body",
+          "muted",
         ),
       ],
     };
   }
-  if (step === 1) {
-    return {
-      kind: "column",
-      gap: 12,
-      children: [
-        inputNode(
-          "Target directory",
-          state.scaffold.target,
-          "plugin-sources/my-plugin",
-          "scaffold_target",
-        ),
-        text(scaffoldTarget(), "small", "muted"),
-      ],
-    };
-  }
-  if (step === 2) {
-    return {
-      kind: "column",
-      gap: 12,
-      children: [
-        table(["Field", "Value"], scaffoldSummaryRows()),
-        table(["Path"], scaffoldPreviewFiles()),
-      ],
-    };
-  }
-  const rows = state.scaffold.files.map((file) => [file.path, `${file.bytes} B`]);
-  return {
-    kind: "column",
-    gap: 12,
-    children: [
-      table(["Path", "Size"], rows),
-      text("npm run plugins:build", "small", "ink"),
-      text("npm run plugins", "small", "ink"),
-      row([
-        button("Open main file", "scaffold_open"),
-        button("Start another", "scaffold_reset"),
-      ]),
+
+  const rows = plugins.map((item) => [
+    item.name,
+    item.id,
+    item.language,
+    item.surface,
+    item.status,
+  ]);
+
+  const selected = plugins[state.selectedPlugin] || plugins[0];
+  const detailRows = [
+    ["Name", selected.name],
+    ["Identifier", selected.id],
+    ["Language", selected.language],
+    ["Command", selected.command],
+    ["Source path", displayPath(selected.sourceDir)],
+    ["Runtime path", displayPath(selected.runtimeDir)],
+    [
+      "Status",
+      selected.error
+        ? `${selected.status} (${selected.error})`
+        : selected.status === "source"
+          ? "source (run npm run plugins:build)"
+          : selected.status,
     ],
-  };
-}
-
-function scaffoldTab() {
-  const step = state.scaffold.step;
-  const children = [
-    text(`${step + 1}/4 · ${STEPS[step]}`, "subtitle", "ink"),
-    scaffoldStep(),
+    [
+      "Files",
+      selected.files.length ? selected.files.join(", ") : "none",
+    ],
   ];
-  if (step < 2) {
-    children.push(
-      row([
-        button("Back", "scaffold_back", step === 0),
-        button("Next", "scaffold_next"),
-      ]),
-    );
-  } else if (step === 2) {
-    children.push(
-      row([
-        button("Back", "scaffold_back"),
-        button("Create", "scaffold_create"),
-      ]),
-    );
-  }
-  return { kind: "column", gap: 18, children };
-}
 
-function generateTab() {
-  const active = provider();
-  const providerNotes = [];
-  if (state.providersError) {
-    providerNotes.push(text(state.providersError, "small", "warning"));
-  } else if (active) {
-    providerNotes.push(text(active.label, "small", "muted"));
-  } else {
-    providerNotes.push(text("Host default", "small", "muted"));
-  }
   return {
     kind: "column",
     gap: 18,
     children: [
-      section("Provider", [
-        inputNode("Model", state.model, "provider default", "model"),
-        ...providerNotes,
-      ]),
-      section("Prompt", [
-        codeEditor("System prompt", state.system, "md", 140, "system"),
-        codeEditor("Prompt", state.prompt, "md", 220, "prompt"),
+      header,
+      table(
+        ["Name", "ID", "Language", "Surface", "Status"],
+        rows,
+        [1.2, 1.5, 0.8, 1.2, 0.7],
+        state.selectedPlugin,
+        "select_plugin",
+      ),
+      section(selected.name, [
+        table(["Field", "Value"], detailRows, [0.9, 2.5]),
         row([
-          button(state.generating ? "Generating…" : "Generate", "generate", state.generating),
-          button("Clear", "clear"),
+          button(
+            state.starting ? "Starting session..." : "Open Authoring Session",
+            "open_plugin_session",
+            state.starting || !selected.workspaceRel,
+          ),
         ]),
       ]),
-      section("Response", [
-        codeEditor("Generated response", state.response, "md", 420, "response_view", true),
-        row([button("Use response in editor", "use_response", !state.response)]),
-      ]),
-    ],
-  };
-}
-
-function editorTab() {
-  return {
-    kind: "column",
-    gap: 12,
-    children: [
-      inputNode(
-        "Project file",
-        state.editor.path,
-        "plugin-sources/my-plugin/index.js",
-        "editor_path",
-      ),
-      row([button("Load", "editor_load"), button("Save", "editor_save")]),
-      text(
-        `${state.editor.language}${state.editor.dirty ? " · modified" : ""}`,
-        "caption",
-        "muted",
-      ),
-      codeEditor("Source", state.editor.content, state.editor.language, 640, "editor_content"),
     ],
   };
 }
 
 function tree() {
-  let body;
-  if (state.tab === 1) body = apiTab();
-  else if (state.tab === 2) body = scaffoldTab();
-  else if (state.tab === 3) body = generateTab();
-  else if (state.tab === 4) body = editorTab();
-  else body = guideTab();
-
+  const body = state.tab === 1 ? pluginsPage() : newPluginPage();
   return pageTabs(TABS, state.tab, "tab", [withStatus(body)]);
 }
 
@@ -1119,7 +1273,6 @@ function tree() {
  * Protocol loop
  * ------------------------------------------------------------------------ */
 
-loadDocs();
 const scanner = readline.createInterface({ input: process.stdin });
 scanner.on("line", (line) => {
   if (!line.trim()) return;
@@ -1143,16 +1296,9 @@ scanner.on("line", (line) => {
         ],
       });
       publish();
-      request("workspace.info", {}, (result) => {
-        state.root = result && result.root ? result.root : "";
-        publish();
-      });
-      refreshApi();
+      refreshWorkspaceAndHost();
     } else if (message.method === "ui.open") {
-      request("workspace.info", {}, (result) => {
-        state.root = result && result.root ? result.root : "";
-        publish();
-      });
+      refreshWorkspaceAndHost();
       publish();
     } else if (message.method === "ui.event") {
       const params = message.params || {};

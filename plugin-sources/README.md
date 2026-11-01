@@ -15,7 +15,7 @@ That command builds the plugins and then launches the native dev app with
 |---|---|---|
 | `dashboard/main.py` | Python | 3-column Python notebook workbench with persistent kernel, variables, and rich output |
 | `workspace-analysis/Cargo.toml` | Rust | Repository activity, churn, language, dependency, and hotspot analysis |
-| `authoring-station/index.js` | Node.js | Docs, scaffolding, source editing, and model assistance |
+| `authoring-station/index.js` | Node.js | Single-page plugin scaffolding, plugin detection, and guided session handoff |
 
 Each source directory owns its `plugin.json`. The build copies that manifest to
 `plugins/<name>/plugin.json` and writes the correct platform-specific command

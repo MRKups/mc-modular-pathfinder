@@ -53,9 +53,9 @@ Returns the authoritative API surface, protocol, limits, and plugin directory.
 {
   "protocol": 1,
   "appVersion": "0.16.0",
-  "methods": ["workspace.info", "storage.get", "storage.set", "host.describe", "llm.providers", "llm.complete"],
-  "features": {"codeEditor": true, "llm": true},
-  "limits": {"uiNodes": 512, "uiTreeBytes": 1048576, "lineBytes": 2097152}
+  "methods": ["workspace.info", "storage.get", "storage.set", "host.describe", "llm.providers", "llm.complete", "session.start"],
+  "features": {"codeEditor": true, "llm": true, "sessions": true},
+  "limits": {"uiNodes": 512, "uiTreeBytes": 1048576, "lineBytes": 2097152, "sessionTitleBytes": 200}
 }
 ```
 
@@ -116,6 +116,31 @@ Params:
 - Tools, approvals, questions, and workspace writes are refused by the runner.
 - Do not expose the Operator app token to plugins. `llm.complete` is the narrow
   boundary for model access.
+
+## session.start
+
+Creates a new Monocode chat session with the user's default provider, switches
+focus from the plugin surface to the new session, and submits an opening prompt.
+
+Request:
+
+```json
+{"jsonrpc":"2.0","id":11,"method":"session.start","params":{
+  "title": "Plugin: Port Inspector",
+  "prompt": "Help me build this plugin."
+}}
+```
+
+Result:
+
+```json
+{"jsonrpc":"2.0","id":11,"result":{"sessionId":42,"provider":"claude"}}
+```
+
+Params:
+
+- `prompt` is required, at most 64 KiB.
+- `title` is optional, at most 200 bytes.
 
 ## Errors
 

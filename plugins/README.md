@@ -31,7 +31,7 @@ each marked with a small plug icon:
 |---|---|---|
 | **Notebook** | Python | Runs a persistent Python kernel in a 3-column workbench with variables, continuous code sheet, and outputs |
 | **Workspace Analysis** | Rust | Reviews repository git activity, code churn, languages, dependencies, hotspots, and TODO markers |
-| **Plugin Authoring** | Node.js | Vertical docs/API/scaffold/generate/editor pages, a four-step scaffold wizard, and `llm.complete` |
+| **Plugin Authoring** | Node.js | Scaffolds Python, Rust, or Node.js plugins, detects installed plugins, and launches a guided authoring session via `session.start` |
 
 Each one is an independent process built from `plugin-sources/<name>/`. Open
 them from the sidebar and interact with the controls; all state lives in the

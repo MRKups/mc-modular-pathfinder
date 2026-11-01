@@ -22,6 +22,9 @@ mod scene;
 #[cfg(test)]
 mod tests;
 
+/// Reading width for plugin pages. The rail sits to the left of this column.
+const PAGE_CONTENT_MAX_WIDTH: f32 = 800.;
+
 /// The transcript must remeasure this row when its content changes.
 pub(crate) struct VisualChanged;
 pub(crate) type RemoteEvent = Rc<dyn Fn(&str, Value)>;
@@ -348,7 +351,7 @@ impl VisualView {
                 async move { crate::editor_syntax::analyze(&syntax, &path, &text, None) }
             });
             if let Ok(analysis) = work.await {
-                let _ = input.update(cx, |input, cx| input.set_editor_analysis(analysis, cx));
+                input.update(cx, |input, cx| input.set_editor_analysis(analysis, cx));
             }
         });
         if let Some(slot) = self.editors.get_mut(key) {
@@ -782,7 +785,8 @@ impl VisualView {
                     .flex_none()
                     .flex()
                     .flex_col()
-                    .gap(px(2.));
+                    .gap(px(1.))
+                    .pt(px(1.));
                 for (i, label) in labels.iter().enumerate() {
                     let active = i == *selected;
                     let handler = handler.clone();
@@ -799,11 +803,10 @@ impl VisualView {
                             .tab_stop(true)
                             .aria_label(label.clone())
                             .aria_selected(active)
-                            .h(px(34.))
-                            .px(px(12.))
+                            .h(px(30.))
+                            .px(px(10.))
                             .flex()
                             .items_center()
-                            .rounded_md()
                             .border_l_2()
                             .border_color(if active {
                                 accent_color()
@@ -812,19 +815,11 @@ impl VisualView {
                             })
                             .text_size(px(13.))
                             .line_height(px(18.))
-                            .text_color(if active { content(1.) } else { content(0.62) })
-                            .when(active, |d| {
-                                d.bg(content(0.07)).font_weight(FontWeight::MEDIUM)
-                            })
+                            .text_color(if active { content(1.) } else { content(0.55) })
+                            .when(active, |d| d.font_weight(FontWeight::MEDIUM))
                             .cursor_pointer()
-                            .hover(move |s| {
-                                if active {
-                                    s.bg(content(0.07)).text_color(content(1.))
-                                } else {
-                                    s.bg(content(0.05)).text_color(content(1.))
-                                }
-                            })
-                            .focus_visible(move |s| s.bg(content(0.08)))
+                            .hover(|s| s.text_color(content(1.)))
+                            .focus_visible(|s| s.bg(content(0.05)))
                             .child(label.clone())
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.dispatch(&handler, json!(i), cx)
@@ -846,14 +841,19 @@ impl VisualView {
                     .min_w_0()
                     .flex()
                     .items_start()
-                    .gap(px(24.))
+                    .gap(px(32.))
                     .child(rail)
                     .child(
                         div()
                             .id(SharedString::from(format!("visual-page-panel-{key}")))
+                            .debug_selector({
+                                let key = key.clone();
+                                move || format!("visual-page-panel-{key}")
+                            })
                             .role(Role::TabPanel)
                             .flex_1()
                             .min_w_0()
+                            .max_w(px(PAGE_CONTENT_MAX_WIDTH))
                             .child(content),
                     )
                     .into_any_element()

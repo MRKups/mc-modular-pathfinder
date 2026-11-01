@@ -1040,16 +1040,7 @@ class Dashboard:
     def overview(self) -> Dict[str, Any]:
         dataset = self.current
         if not dataset or not dataset.columns or not dataset.rows:
-            return card(
-                "No dataset",
-                [
-                    text(
-                        "Choose a file in the header, or open the Data tab to load a path.",
-                        "body",
-                        "muted",
-                    )
-                ],
-            )
+            return card("No dataset", [text("No dataset loaded.", "body", "muted")])
         labels, series, _ = self.chart_data()
         missing = dataset.missing()
         cells = max(1, len(dataset.rows) * len(dataset.columns))
@@ -1089,147 +1080,95 @@ class Dashboard:
             [str(dataset.value(row, index))[:60] for index in range(len(preview_columns))]
             for row in dataset.rows[:8]
         ]
-        top_label, top_count = top_counts[0] if top_counts else ("—", 0)
-        insight_index = x_index
-        for index, column in enumerate(dataset.columns):
-            if index in dataset.numeric:
-                continue
-            values = dataset.column_values(index)
-            unique = len({unique_label(value) for value in values})
-            if 1 < unique <= 20:
-                insight_index = index
-                break
-        insight_counts: Dict[str, int] = {}
-        for value in dataset.column_values(insight_index):
-            label = unique_label(value)
-            insight_counts[label] = insight_counts.get(label, 0) + 1
-        insight_top = sorted(insight_counts.items(), key=lambda item: -item[1])[:1]
-        insight_label, insight_count = insight_top[0] if insight_top else ("—", 0)
-        insight = (
-            f"{len(dataset.rows):,} rows across {len(dataset.columns)} columns. "
-            f"{len(dataset.numeric)} numeric column(s); {missing:,} missing cells. "
+        stats = card(
+            "Dataset",
+            [
+                table(
+                    ["Metric", "Value", "Detail"],
+                    [
+                        ["Rows", f"{len(dataset.rows):,}", "capped at 20,000"],
+                        ["Columns", str(len(dataset.columns)), f"{len(dataset.numeric)} numeric"],
+                        [
+                            "Missing cells",
+                            f"{100 * missing / cells:.1f}%",
+                            f"{missing:,} of {cells:,} cells",
+                        ],
+                        [
+                            "Source",
+                            fmt_size(dataset.size) if dataset.size else "sample",
+                            "sample" if dataset.sample else "workspace file",
+                        ],
+                    ],
+                )
+            ],
         )
-        if insight_count > 1:
-            insight += (
-                f"Most common {dataset.columns[insight_index]}: "
-                f"{insight_label} ({insight_count} rows). "
-            )
-        else:
-            insight += f"Every {dataset.columns[insight_index]} value is distinct. "
-        if numeric_columns:
-            insight += f" Numeric fields include {', '.join(numeric_columns[:3])}."
-
-        stats = {
-            "kind": "grid",
-            "columns": 4,
-            "gap": 12,
-            "children": [
-                stat("Rows", f"{len(dataset.rows):,}", "loaded (capped at 20k)", "accent"),
-                stat("Columns", str(len(dataset.columns)), f"{len(dataset.numeric)} numeric", "ink"),
-                stat(
-                    "Missing cells",
-                    f"{100 * missing / cells:.1f}%",
-                    f"{missing:,} of {cells:,}",
-                    "warning" if missing else "positive",
-                ),
-                stat(
-                    "Source",
-                    fmt_size(dataset.size) if dataset.size else "sample",
-                    "sample · static" if dataset.sample else "workspace file",
-                    "series6",
-                ),
-            ],
-        }
-        charts = {
-            "kind": "grid",
-            "columns": 2,
-            "gap": 12,
-            "children": [
-                card(
-                    "Selected view",
-                    [
-                        text(
-                            f"X: {dataset.columns[x_index]} · "
-                            f"{AGGREGATIONS[self.aggregation]} "
-                            f"{numeric_columns[0] if numeric_columns else 'rows'} · "
-                            f"{CHART_TYPES[self.chart_type]}",
-                            "small",
-                            "muted",
-                        ),
-                        {
-                            "kind": "chart",
-                            "chart_type": CHART_TYPES[self.chart_type].lower(),
-                            "labels": labels,
-                            "series": series,
-                            "height": 230,
-                        },
-                    ],
-                ),
-                card(
-                    "Distribution",
-                    [
-                        {
-                            "kind": "donut",
-                            "slices": donut_slices,
-                            "label": dataset.columns[x_index],
-                            "value": f"{len(counts)} groups",
-                        },
-                        {
-                            "kind": "gauge",
-                            "label": "Completeness",
-                            "value": round(completeness, 1),
-                            "min": 0,
-                            "max": 100,
-                            "unit": "%",
-                            "color": "positive" if completeness >= 95 else "warning",
-                        },
-                        {
-                            "kind": "progress",
-                            "label": f"Top group: {top_label}",
-                            "value": float(top_count),
-                            "max": float(max(1, len(dataset.rows))),
-                            "detail": f"{top_count} of {len(dataset.rows)} rows",
-                            "color": "accent",
-                        },
-                    ],
-                ),
-            ],
-        }
-        lower = {
-            "kind": "grid",
-            "columns": 2,
-            "gap": 12,
-            "children": [
-                card(
-                    "Preview",
-                    [
-                        table(preview_columns, preview_rows),
-                        text(
-                            "The Data tab has the full preview and per-column profile.",
-                            "caption",
-                            "muted",
-                        ),
-                    ],
-                ),
-                card(
-                    "Numeric correlation",
-                    [
-                        heatmap
-                        if heatmap
-                        else text("Add at least two numeric columns to see correlations.", "body", "muted")
-                    ],
-                ),
-            ],
-        }
+        charts = [
+            card(
+                "Selected view",
+                [
+                    text(
+                        f"X: {dataset.columns[x_index]} · "
+                        f"{AGGREGATIONS[self.aggregation]} "
+                        f"{numeric_columns[0] if numeric_columns else 'rows'} · "
+                        f"{CHART_TYPES[self.chart_type]}",
+                        "small",
+                        "muted",
+                    ),
+                    {
+                        "kind": "chart",
+                        "chart_type": CHART_TYPES[self.chart_type].lower(),
+                        "labels": labels,
+                        "series": series,
+                        "height": 230,
+                    },
+                ],
+            ),
+            card(
+                "Distribution",
+                [
+                    {
+                        "kind": "donut",
+                        "slices": donut_slices,
+                        "label": dataset.columns[x_index],
+                        "value": f"{len(counts)} groups",
+                    },
+                    {
+                        "kind": "gauge",
+                        "label": "Completeness",
+                        "value": round(completeness, 1),
+                        "min": 0,
+                        "max": 100,
+                        "unit": "%",
+                        "color": "positive" if completeness >= 95 else "warning",
+                    },
+                ],
+            ),
+        ]
+        lower = [
+            card(
+                "Preview",
+                [
+                    table(preview_columns, preview_rows),
+                    text(
+                        f"Showing {min(8, len(dataset.rows))} of {len(dataset.rows):,} rows.",
+                        "caption",
+                        "muted",
+                    ),
+                ],
+            ),
+            card(
+                "Numeric correlation",
+                [
+                    heatmap
+                    if heatmap
+                    else text("Add at least two numeric columns.", "body", "muted")
+                ],
+            ),
+        ]
         return {
             "kind": "column",
             "gap": 12,
-            "children": [
-                stats,
-                charts,
-                lower,
-                card("Insight", [text(insight, "body", "muted")]),
-            ],
+            "children": [stats, *charts, *lower],
         }
 
     def explore(self) -> Dict[str, Any]:
@@ -1276,9 +1215,8 @@ class Dashboard:
         )
         histogram = histogram_canvas(dataset, metric) if metric is not None else None
         controls = {
-            "kind": "grid",
-            "columns": 4,
-            "gap": 10,
+            "kind": "column",
+            "gap": 8,
             "children": [
                 select("X axis", x_options, x_index, "x"),
                 select("Measure", metric_options, metric_selected, "metric"),
@@ -1290,7 +1228,7 @@ class Dashboard:
             "kind": "column",
             "gap": 12,
             "children": [
-                card("Shape the view", [controls]),
+                card("View", [controls]),
                 card(
                     f"{CHART_TYPES[self.chart_type]} of {aggregation == 2 and 'rows' or metric_name} by {dataset.columns[x_index]}",
                     [
@@ -1307,66 +1245,52 @@ class Dashboard:
                     [
                         card(
                             f"Raw distribution · {metric_name}",
-                            [
-                                histogram,
-                                text(
-                                    "Every row in the active dataset, bucketed into 12 equal-width bins.",
-                                    "caption",
-                                    "muted",
-                                ),
-                            ],
+                            [histogram],
                         )
                     ]
                     if histogram
                     else []
                 ),
-                {
-                    "kind": "grid",
-                    "columns": 2,
-                    "gap": 12,
-                    "children": [
-                        card(
-                            "Grouped values",
-                            [
-                                table(grouped_columns, grouped_rows),
-                                text(
-                                    f"Top group holds {top_share:.1f}% of the plotted measure.",
-                                    "caption",
-                                    "muted",
-                                ),
-                            ],
-                        ),
-                        card(
-                            "View controls",
-                            [
-                                {
-                                    "kind": "slider",
-                                    "label": f"Top groups ({self.top_n})",
-                                    "value": self.top_n,
-                                    "min": 3,
-                                    "max": 20,
-                                    "step": 1,
-                                    "handler": "top_n",
-                                },
-                                toggle("Compare up to 3 measures", self.compare, "compare"),
-                                {
-                                    "kind": "progress",
-                                    "label": "Groups shown",
-                                    "value": len(labels),
-                                    "max": 20,
-                                    "detail": f"{len(labels)} of up to 20 groups",
-                                    "color": "series2",
-                                },
-                                {
-                                    "kind": "button",
-                                    "label": "Reset view",
-                                    "handler": "reset",
-                                    "disabled": False,
-                                },
-                            ],
+                card(
+                    "Grouped values",
+                    [
+                        table(grouped_columns, grouped_rows),
+                        text(
+                            f"Top group: {top_share:.1f}% of the plotted measure.",
+                            "caption",
+                            "muted",
                         ),
                     ],
-                },
+                ),
+                card(
+                    "View controls",
+                    [
+                        {
+                            "kind": "slider",
+                            "label": f"Top groups ({self.top_n})",
+                            "value": self.top_n,
+                            "min": 3,
+                            "max": 20,
+                            "step": 1,
+                            "handler": "top_n",
+                        },
+                        toggle("Compare up to 3 measures", self.compare, "compare"),
+                        {
+                            "kind": "progress",
+                            "label": "Groups shown",
+                            "value": len(labels),
+                            "max": 20,
+                            "detail": f"{len(labels)} of up to 20 groups",
+                            "color": "series2",
+                        },
+                        {
+                            "kind": "button",
+                            "label": "Reset view",
+                            "handler": "reset",
+                            "disabled": False,
+                        },
+                    ],
+                ),
             ],
         }
 
@@ -1376,11 +1300,7 @@ class Dashboard:
             return card(
                 "Open a file",
                 [
-                    text(
-                        "Paths are relative to the active project. CSV, TSV, and JSON are supported.",
-                        "body",
-                        "muted",
-                    ),
+                    text("CSV, TSV, or JSON inside the project.", "body", "muted"),
                     {
                         "kind": "row",
                         "gap": 8,
@@ -1448,11 +1368,6 @@ class Dashboard:
                                 button("Rescan workspace", "refresh_files"),
                             ],
                         },
-                        text(
-                            "Discovered files stay under 5 MB and outside build/vendor directories.",
-                            "caption",
-                            "muted",
-                        ),
                     ],
                 ),
                 card(
@@ -1484,32 +1399,17 @@ class Dashboard:
         selected = self.dataset_index()
         dataset_select = select("Dataset", values or ["Sample · Release activity"], selected, "dataset")
         dataset_select["selected"] = max(0, min(selected, len(dataset_select["options"]) - 1))
-        project = self.root or "no workspace"
-        dataset_note = "sample" if self.current and self.current.sample else "live file"
-        row = {
-            "kind": "row",
-            "gap": 8,
-            "children": [
-                dataset_select,
-                button("Refresh file", "refresh", disabled=not (self.current and self.current.path)),
-                button("Rescan", "refresh_files"),
-                toggle("Live", self.live, "live"),
-            ],
-        }
         return [
-            text("Data Dashboard", "hero", "ink"),
-            text(
-                f"Explore CSV, TSV, and JSON under {project}.",
-                "body",
-                "muted",
-            ),
-            row,
-            text(
-                f"{len(self.files)} workspace file(s) discovered · "
-                f"{dataset_note} · updated {self.last_refresh}",
-                "caption",
-                "faint",
-            ),
+            dataset_select,
+            {
+                "kind": "row",
+                "gap": 8,
+                "children": [
+                    button("Refresh file", "refresh", disabled=not (self.current and self.current.path)),
+                    button("Rescan", "refresh_files"),
+                    toggle("Live", self.live, "live"),
+                ],
+            },
         ]
 
     def tree(self) -> Dict[str, Any]:
@@ -1520,22 +1420,18 @@ class Dashboard:
             body = self.explore()
         else:
             body = self.data_tab()
-        children: List[Dict[str, Any]] = [
-            *self.header(),
-        ]
+        content: List[Dict[str, Any]] = [*self.header()]
         if self.status:
-            children.append(text(self.status, "small", "muted"))
-        children.append(
-            {
-                "kind": "page_tabs",
-                "labels": ["Overview", "Explore", "Data"],
-                "selected": self.tab,
-                "handler": "tab",
-                "nav_width": 210,
-                "children": [body],
-            }
-        )
-        return {"kind": "column", "gap": 16, "children": children}
+            content.append(text(self.status, "small", "muted"))
+        content.append(body)
+        return {
+            "kind": "page_tabs",
+            "labels": ["Overview", "Explore", "Data"],
+            "selected": self.tab,
+            "handler": "tab",
+            "nav_width": 210,
+            "children": [{"kind": "column", "gap": 12, "children": content}],
+        }
 
     def publish(self) -> None:
         notify("ui.set", {"surface": SURFACE, "tree": self.tree()})

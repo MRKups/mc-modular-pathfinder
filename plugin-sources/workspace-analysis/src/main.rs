@@ -4,7 +4,7 @@
 //! local toolchain checks, and publishes a native report. It never writes to the
 //! workspace. stdout is protocol traffic only; logs go to stderr.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File},
@@ -104,8 +104,6 @@ struct Check {
 
 #[derive(Clone, Default)]
 struct Analysis {
-    root: String,
-    name: String,
     files: Vec<FileInfo>,
     languages: BTreeMap<String, LanguageStats>,
     manifests: Vec<Manifest>,
@@ -340,11 +338,6 @@ fn walk(root: &Path) -> (Vec<FileInfo>, bool, bool) {
 
 fn analyze(root: &Path) -> Analysis {
     let started = Instant::now();
-    let name = root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("workspace")
-        .to_string();
     let (mut files, truncated, _) = walk(root);
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -365,9 +358,7 @@ fn analyze(root: &Path) -> Analysis {
 
     for file in &mut files {
         total_bytes += file.size;
-        let entry = languages
-            .entry(file.language.clone())
-            .or_default();
+        let entry = languages.entry(file.language.clone()).or_default();
         entry.files += 1;
         entry.bytes += file.size;
 
@@ -422,13 +413,7 @@ fn analyze(root: &Path) -> Analysis {
         }
         let text = String::from_utf8_lossy(&bytes);
         let relative = file.path.clone();
-        scan_content(
-            &relative,
-            &text,
-            file,
-            &mut todos,
-            &mut todo_tags_map,
-        );
+        scan_content(&relative, &text, file, &mut todos, &mut todo_tags_map);
         entry.lines += file.lines;
         total_lines += file.lines;
     }
@@ -554,8 +539,6 @@ fn analyze(root: &Path) -> Analysis {
     }
 
     Analysis {
-        root: root.to_string_lossy().to_string(),
-        name,
         files,
         languages,
         manifests,
@@ -627,9 +610,7 @@ fn read_manifest(root: &Path, path: &str) -> Manifest {
             if let Ok(value) = serde_json::from_str::<Value>(&content) {
                 manifest.name = value["name"].as_str().unwrap_or("").to_string();
                 manifest.version = value["version"].as_str().unwrap_or("").to_string();
-                let runtime = value["dependencies"]
-                    .as_object()
-                    .map_or(0, |map| map.len());
+                let runtime = value["dependencies"].as_object().map_or(0, |map| map.len());
                 let dev = value["devDependencies"]
                     .as_object()
                     .map_or(0, |map| map.len());
@@ -641,7 +622,10 @@ fn read_manifest(root: &Path, path: &str) -> Manifest {
         "Rust" => {
             manifest.name = toml_value(&content, "name");
             manifest.version = toml_value(&content, "version");
-            manifest.deps = Some(count_sections(&content, &["dependencies", "dev-dependencies", "build-dependencies"]));
+            manifest.deps = Some(count_sections(
+                &content,
+                &["dependencies", "dev-dependencies", "build-dependencies"],
+            ));
             manifest.detail = format!("{} dependency lines", manifest.deps.unwrap_or_default());
         }
         "Go" => {
@@ -656,7 +640,8 @@ fn read_manifest(root: &Path, path: &str) -> Manifest {
                     let trimmed = line.trim();
                     !trimmed.is_empty()
                         && !trimmed.starts_with("//")
-                        && (trimmed.contains(' ') && trimmed.contains('/') || trimmed.starts_with("require"))
+                        && (trimmed.contains(' ') && trimmed.contains('/')
+                            || trimmed.starts_with("require"))
                 })
                 .count();
             manifest.deps = Some(deps);
@@ -664,7 +649,10 @@ fn read_manifest(root: &Path, path: &str) -> Manifest {
         }
         "Python" => {
             manifest.name = toml_value(&content, "name");
-            manifest.deps = Some(count_sections(&content, &["dependencies", "dev-dependencies"]));
+            manifest.deps = Some(count_sections(
+                &content,
+                &["dependencies", "dev-dependencies"],
+            ));
             manifest.detail = if path.ends_with("requirements.txt") {
                 let deps = content
                     .lines()
@@ -680,7 +668,12 @@ fn read_manifest(root: &Path, path: &str) -> Manifest {
             };
         }
         "Ruby" => {
-            manifest.deps = Some(content.lines().filter(|line| line.trim_start().starts_with("gem ")).count());
+            manifest.deps = Some(
+                content
+                    .lines()
+                    .filter(|line| line.trim_start().starts_with("gem "))
+                    .count(),
+            );
             manifest.detail = format!("{} gem line(s)", manifest.deps.unwrap_or_default());
         }
         "PHP" => {
@@ -690,12 +683,18 @@ fn read_manifest(root: &Path, path: &str) -> Manifest {
                     value["require"].as_object().map_or(0, |map| map.len())
                         + value["require-dev"].as_object().map_or(0, |map| map.len()),
                 );
-                manifest.detail = format!("{} composer requirement(s)", manifest.deps.unwrap_or_default());
+                manifest.detail = format!(
+                    "{} composer requirement(s)",
+                    manifest.deps.unwrap_or_default()
+                );
             }
         }
         "Java" => {
             manifest.deps = Some(content.matches("<dependency>").count());
-            manifest.detail = format!("{} Maven dependency block(s)", manifest.deps.unwrap_or_default());
+            manifest.detail = format!(
+                "{} Maven dependency block(s)",
+                manifest.deps.unwrap_or_default()
+            );
         }
         "Java/Kotlin" => {
             manifest.deps = Some(
@@ -709,13 +708,21 @@ fn read_manifest(root: &Path, path: &str) -> Manifest {
                     })
                     .count(),
             );
-            manifest.detail = format!("{} Gradle dependency line(s)", manifest.deps.unwrap_or_default());
+            manifest.detail = format!(
+                "{} Gradle dependency line(s)",
+                manifest.deps.unwrap_or_default()
+            );
         }
         "C/C++" => {
             manifest.name = content
                 .lines()
                 .find(|line| line.trim_start().starts_with("project("))
-                .map(|line| line.trim().trim_start_matches("project(").trim_end_matches(')').to_string())
+                .map(|line| {
+                    line.trim()
+                        .trim_start_matches("project(")
+                        .trim_end_matches(')')
+                        .to_string()
+                })
                 .unwrap_or_default();
             manifest.detail = "CMake project".into();
         }
@@ -755,16 +762,12 @@ fn count_sections(content: &str, sections: &[&str]) -> usize {
                 trimmed
                     .trim_matches(['[', ']'])
                     .split('.')
-                    .last()
+                    .next_back()
                     .is_some_and(|name| name == *section)
             });
             continue;
         }
-        if active
-            && !trimmed.is_empty()
-            && !trimmed.starts_with('#')
-            && !trimmed.starts_with('[')
-        {
+        if active && !trimmed.is_empty() && !trimmed.starts_with('#') && !trimmed.starts_with('[') {
             count += 1;
         }
     }
@@ -838,8 +841,8 @@ fn git_info(root: &Path) -> GitInfo {
     }
     let branch = command_line(root, &["rev-parse", "--abbrev-ref", "HEAD"])
         .unwrap_or_else(|| "detached".into());
-    let last_commit = command_line(root, &["log", "-1", "--format=%h  %cr  %s"])
-        .unwrap_or_default();
+    let last_commit =
+        command_line(root, &["log", "-1", "--format=%h  %cr  %s"]).unwrap_or_default();
     let dirty = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -858,7 +861,12 @@ fn git_info(root: &Path) -> GitInfo {
 }
 
 fn command_line(root: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git").arg("-C").arg(root).args(args).output().ok()?;
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -878,19 +886,6 @@ fn card(title: &str, children: Vec<Value>) -> Value {
     let mut all = vec![text(title, "subtitle", "ink")];
     all.extend(children);
     json!({"kind": "card", "gap": 10, "children": all})
-}
-
-fn stat(label: &str, value: impl Into<String>, detail: Option<String>, color: &str) -> Value {
-    let mut node = json!({
-        "kind": "stat",
-        "label": label,
-        "value": value.into(),
-        "color": color
-    });
-    if let Some(detail) = detail {
-        node["detail"] = json!(detail);
-    }
-    node
 }
 
 fn table(columns: &[&str], rows: Vec<Vec<String>>) -> Value {
@@ -914,29 +909,14 @@ fn percent(part: usize, total: usize) -> f64 {
 
 fn overview(analysis: &Analysis) -> Value {
     let passed = analysis.checks.iter().filter(|check| check.ok).count();
-    let language_slices = analysis
-        .languages
-        .iter()
-        .filter(|(_, stats)| stats.lines > 0)
-        .take(6)
-        .enumerate()
-        .map(|(index, (name, stats))| {
-            let colors = ["accent", "series2", "series4", "series5", "series6", "positive"];
-            json!({
-                "label": name,
-                "value": stats.lines as f64,
-                "color": colors[index % colors.len()]
-            })
-        })
-        .collect::<Vec<_>>();
     let warnings = if analysis.warnings.is_empty() {
-        vec![text("No obvious repository-health warnings.", "body", "positive")]
+        vec![text("None.", "body", "muted")]
     } else {
         analysis
             .warnings
             .iter()
             .take(10)
-            .map(|warning| text(format!("• {warning}"), "small", "warning"))
+            .map(|warning| text(warning, "small", "warning"))
             .collect()
     };
     let git_summary = if analysis.git.repo {
@@ -956,6 +936,26 @@ fn overview(analysis: &Analysis) -> Value {
     };
     let mut warning_children = vec![text(git_summary, "small", "muted")];
     warning_children.extend(warnings);
+    let summary_rows = vec![
+        vec!["Files".into(), analysis.files.len().to_string()],
+        vec!["Lines".into(), analysis.total_lines.to_string()],
+        vec!["Languages".into(), analysis.languages.len().to_string()],
+        vec!["Manifests".into(), analysis.manifests.len().to_string()],
+        vec!["Size".into(), fmt_size(analysis.total_bytes)],
+    ];
+    let language_rows = analysis
+        .languages
+        .iter()
+        .filter(|(_, stats)| stats.lines > 0)
+        .take(8)
+        .map(|(name, stats)| {
+            vec![
+                name.clone(),
+                stats.files.to_string(),
+                stats.lines.to_string(),
+            ]
+        })
+        .collect();
     let manifest_rows = analysis
         .manifests
         .iter()
@@ -978,7 +978,11 @@ fn overview(analysis: &Analysis) -> Value {
         .map(|check| {
             vec![
                 check.label.clone(),
-                if check.ok { "pass".into() } else { "attention".into() },
+                if check.ok {
+                    "pass".into()
+                } else {
+                    "attention".into()
+                },
                 check.detail.clone(),
             ]
         })
@@ -987,64 +991,31 @@ fn overview(analysis: &Analysis) -> Value {
         "kind": "column",
         "gap": 12,
         "children": [
-            {
-                "kind": "grid",
-                "columns": 4,
-                "gap": 12,
-                "children": [
-                    stat("Files", analysis.files.len().to_string(), Some(format!("{} scanned at most", MAX_FILES)), "accent"),
-                    stat("Lines", analysis.total_lines.to_string(), Some("source and docs".into()), "ink"),
-                    stat("Languages", analysis.languages.len().to_string(), Some(format!("{} manifests", analysis.manifests.len())), "series2"),
-                    stat("Size", fmt_size(analysis.total_bytes), Some(analysis.git.branch.clone()), "series6")
-                ]
-            },
-            {
-                "kind": "grid",
-                "columns": 2,
-                "gap": 12,
-                "children": [
-                    card("Repository health", vec![
-                        json!({
-                            "kind": "progress",
-                            "label": format!("{passed}/{} checks passing", analysis.checks.len()),
-                            "value": passed as f64,
-                            "max": analysis.checks.len().max(1) as f64,
-                            "detail": "Evidence-based checks, not a score",
-                            "color": if passed == analysis.checks.len() { "positive" } else { "warning" }
-                        }),
-                        table(&["Check", "Status", "Detail"], checks_rows)
-                    ]),
-                    card("Warnings", warning_children)
-                ]
-            },
-            {
-                "kind": "grid",
-                "columns": 2,
-                "gap": 12,
-                "children": [
-                    card("Languages by lines", vec![
-                        json!({
-                            "kind": "donut",
-                            "slices": if language_slices.is_empty() {
-                                vec![json!({"label":"No source","value":1.0,"color":"muted"})]
-                            } else { language_slices },
-                            "label": "lines",
-                            "value": format!("{}", analysis.total_lines)
-                        })
-                    ]),
-                    card("Manifests", vec![table(&["Path", "Ecosystem", "Name", "Deps"], manifest_rows)])
-                ]
-            }
+            card("Summary", vec![table(&["Metric", "Value"], summary_rows)]),
+            card("Checks", vec![
+                json!({
+                    "kind": "progress",
+                    "label": format!("{passed}/{} passing", analysis.checks.len()),
+                    "value": passed as f64,
+                    "max": analysis.checks.len().max(1) as f64,
+                    "color": if passed == analysis.checks.len() { "positive" } else { "warning" }
+                }),
+                table(&["Check", "Status", "Detail"], checks_rows)
+            ]),
+            card("Warnings", warning_children),
+            card("Languages", vec![table(&["Language", "Files", "Lines"], language_rows)]),
+            card("Manifests", vec![table(&["Path", "Ecosystem", "Name", "Deps"], manifest_rows)])
         ]
     })
 }
 
 fn languages(analysis: &Analysis) -> Value {
-    let mut entries = analysis
-        .languages
-        .iter()
-        .collect::<Vec<_>>();
-    entries.sort_by(|a, b| b.1.lines.cmp(&a.1.lines).then_with(|| b.1.bytes.cmp(&a.1.bytes)));
+    let mut entries = analysis.languages.iter().collect::<Vec<_>>();
+    entries.sort_by(|a, b| {
+        b.1.lines
+            .cmp(&a.1.lines)
+            .then_with(|| b.1.bytes.cmp(&a.1.bytes))
+    });
     let top = entries.iter().take(12).collect::<Vec<_>>();
     let labels = if top.is_empty() {
         vec!["No files".to_string()]
@@ -1054,9 +1025,7 @@ fn languages(analysis: &Analysis) -> Value {
     let values = if top.is_empty() {
         vec![0.0]
     } else {
-        top.iter()
-            .map(|(_, stats)| stats.lines as f64)
-            .collect()
+        top.iter().map(|(_, stats)| stats.lines as f64).collect()
     };
     let rows = entries
         .iter()
@@ -1112,7 +1081,11 @@ fn dependencies(analysis: &Analysis) -> Value {
         .map(|tool| {
             vec![
                 tool.name.clone(),
-                if tool.available { "available".into() } else { "missing".into() },
+                if tool.available {
+                    "available".into()
+                } else {
+                    "missing".into()
+                },
                 tool.version.clone(),
             ]
         })
@@ -1125,29 +1098,31 @@ fn dependencies(analysis: &Analysis) -> Value {
         ("Lockfile", analysis.lockfile),
     ]
     .into_iter()
-    .map(|(name, ok)| vec![name.into(), if ok { "present".into() } else { "missing".into() }])
+    .map(|(name, ok)| {
+        vec![
+            name.into(),
+            if ok {
+                "present".into()
+            } else {
+                "missing".into()
+            },
+        ]
+    })
     .collect();
     json!({
         "kind": "column",
         "gap": 12,
         "children": [
             card("Manifests", vec![table(&["Path", "Ecosystem", "Name", "Version", "Deps", "Detail"], manifest_rows)]),
-            {
-                "kind": "grid",
-                "columns": 2,
-                "gap": 12,
-                "children": [
-                    card("Toolchains", vec![table(&["Tool", "Status", "Version"], tool_rows)]),
-                    card("Project files", vec![table(&["Kind", "Status"], lock_rows)])
-                ]
-            }
+            card("Toolchains", vec![table(&["Tool", "Status", "Version"], tool_rows)]),
+            card("Project files", vec![table(&["Kind", "Status"], lock_rows)])
         ]
     })
 }
 
 fn files_tab(analysis: &Analysis) -> Value {
     let mut by_size = analysis.files.iter().collect::<Vec<_>>();
-    by_size.sort_by(|a, b| b.size.cmp(&a.size));
+    by_size.sort_by_key(|file| std::cmp::Reverse(file.size));
     let size_rows = by_size
         .iter()
         .take(20)
@@ -1160,8 +1135,12 @@ fn files_tab(analysis: &Analysis) -> Value {
             ]
         })
         .collect();
-    let mut by_lines = analysis.files.iter().filter(|file| file.source).collect::<Vec<_>>();
-    by_lines.sort_by(|a, b| b.lines.cmp(&a.lines));
+    let mut by_lines = analysis
+        .files
+        .iter()
+        .filter(|file| file.source)
+        .collect::<Vec<_>>();
+    by_lines.sort_by_key(|file| std::cmp::Reverse(file.lines));
     let line_rows = by_lines
         .iter()
         .take(20)
@@ -1174,26 +1153,29 @@ fn files_tab(analysis: &Analysis) -> Value {
             ]
         })
         .collect();
-    let mut hotspots = analysis.files.iter().filter(|file| file.todo > 0).collect::<Vec<_>>();
-    hotspots.sort_by(|a, b| b.todo.cmp(&a.todo));
+    let mut hotspots = analysis
+        .files
+        .iter()
+        .filter(|file| file.todo > 0)
+        .collect::<Vec<_>>();
+    hotspots.sort_by_key(|file| std::cmp::Reverse(file.todo));
     let hotspot_rows = hotspots
         .iter()
         .take(20)
-        .map(|file| vec![file.path.clone(), file.todo.to_string(), file.language.clone()])
+        .map(|file| {
+            vec![
+                file.path.clone(),
+                file.todo.to_string(),
+                file.language.clone(),
+            ]
+        })
         .collect();
     json!({
         "kind": "column",
         "gap": 12,
         "children": [
-            {
-                "kind": "grid",
-                "columns": 2,
-                "gap": 12,
-                "children": [
-                    card("Largest files", vec![table(&["Path", "Size", "Lines", "Language"], size_rows)]),
-                    card("Longest source files", vec![table(&["Path", "Lines", "Language", "Markers"], line_rows)])
-                ]
-            },
+            card("Largest files", vec![table(&["Path", "Size", "Lines", "Language"], size_rows)]),
+            card("Longest source files", vec![table(&["Path", "Lines", "Language", "Markers"], line_rows)]),
             card("TODO hotspots", vec![table(&["Path", "Markers", "Language"], hotspot_rows)])
         ]
     })
@@ -1210,85 +1192,76 @@ fn todo_tab(analysis: &Analysis) -> Value {
         .todos
         .iter()
         .take(100)
-        .map(|todo| vec![todo.path.clone(), todo.line.to_string(), todo.tag.clone(), todo.text.clone()])
+        .map(|todo| {
+            vec![
+                todo.path.clone(),
+                todo.line.to_string(),
+                todo.tag.clone(),
+                todo.text.clone(),
+            ]
+        })
         .collect();
+    let summary_rows = vec![
+        vec!["Markers".into(), analysis.todo_total.to_string()],
+        vec![
+            "Files with markers".into(),
+            analysis
+                .files
+                .iter()
+                .filter(|file| file.todo > 0)
+                .count()
+                .to_string(),
+        ],
+        vec!["Showing".into(), analysis.todos.len().to_string()],
+    ];
     json!({
         "kind": "column",
         "gap": 12,
         "children": [
-            {
-                "kind": "grid",
-                "columns": 3,
-                "gap": 12,
-                "children": [
-                    stat("Markers", analysis.todo_total.to_string(), Some("TODO/FIXME/HACK/XXX".into()), "warning"),
-                    stat("Files with markers", analysis.files.iter().filter(|file| file.todo > 0).count().to_string(), None, "accent"),
-                    stat("Showing", analysis.todos.len().to_string(), Some("first 100 samples".into()), "muted")
-                ]
-            },
-            {
-                "kind": "grid",
-                "columns": 2,
-                "gap": 12,
-                "children": [
-                    card("By tag", vec![table(&["Tag", "Count"], tag_rows)]),
-                    card("How to read this", vec![text(
-                        "Markers are cheap evidence of follow-up work. A high count is not automatically bad; compare it with the size and age of the codebase.",
-                        "body",
-                        "muted"
-                    )])
-                ]
-            },
+            card("Summary", vec![table(&["Metric", "Value"], summary_rows)]),
+            card("By tag", vec![table(&["Tag", "Count"], tag_rows)]),
             card("Marker inventory", vec![table(&["Path", "Line", "Tag", "Excerpt"], rows)])
         ]
     })
 }
 
 fn tree(state: &State) -> Value {
-    let Some(analysis) = &state.analysis else {
-        return json!({
+    let body = if let Some(analysis) = &state.analysis {
+        match state.tab {
+            0 => overview(analysis),
+            1 => languages(analysis),
+            2 => dependencies(analysis),
+            3 => files_tab(analysis),
+            _ => todo_tab(analysis),
+        }
+    } else {
+        json!({
+            "kind": "column",
+            "gap": 12,
+            "children": [text(state.status.clone(), "body", "muted")]
+        })
+    };
+    json!({
+        "kind": "page_tabs",
+        "labels": ["Overview", "Languages", "Dependencies", "Files", "TODO"],
+        "selected": state.tab,
+        "handler": "tab",
+        "nav_width": 210,
+        "children": [{
             "kind": "column",
             "gap": 12,
             "children": [
-                text("Workspace Analysis", "hero", "ink"),
-                text(state.status.clone(), "body", "muted")
+                {
+                    "kind": "row",
+                    "gap": 8,
+                    "children": [
+                        {"kind": "button", "label": "Rescan", "handler": "refresh", "disabled": false},
+                        {"kind": "toggle", "label": "Live (5 s)", "value": state.live, "handler": "live"}
+                    ]
+                },
+                body
             ]
-        });
-    };
-    let body = match state.tab {
-        0 => overview(analysis),
-        1 => languages(analysis),
-        2 => dependencies(analysis),
-        3 => files_tab(analysis),
-        _ => todo_tab(analysis),
-    };
-    let passed = analysis.checks.iter().filter(|check| check.ok).count();
-    json!({
-        "kind": "column",
-        "gap": 16,
-        "children": [
-            text("Workspace Analysis", "hero", "ink"),
-            text(format!("{} · {}", analysis.name, analysis.root), "body", "muted"),
-            {
-                "kind": "row",
-                "gap": 8,
-                "children": [
-                    {"kind": "button", "label": "Rescan", "handler": "refresh", "disabled": false},
-                    {"kind": "toggle", "label": "Live (5 s)", "value": state.live, "handler": "live"},
-                    stat("Checks", format!("{passed}/{}", analysis.checks.len()), None, if passed == analysis.checks.len() { "positive" } else { "warning" }),
-                    stat("Scan", format!("{} ms", analysis.scanned_ms), Some(analysis.scanned_at.clone()), "ink")
-                ]
-            },
-            text(state.status.clone(), "small", "muted"),
-            {
-                "kind": "page_tabs",
-                "labels": ["Overview", "Languages", "Dependencies", "Files", "TODO"],
-                "selected": state.tab,
-                "handler": "tab",
-                "nav_width": 210,
-                "children": [body]
-            }
-        ]
+        }]
     })
 }
 
@@ -1403,7 +1376,9 @@ fn main() {
             }
             Err(RecvTimeoutError::Timeout) => {
                 if state.live
-                    && state.last_scan.is_some_and(|last| last.elapsed() > Duration::from_secs(5))
+                    && state
+                        .last_scan
+                        .is_some_and(|last| last.elapsed() > Duration::from_secs(5))
                 {
                     state.rescan();
                     publish(&mut out, &state);

@@ -13,7 +13,8 @@
   routes UI events and host calls, and shuts children down.
 - Plugin UI is a declarative native tree rendered by GPUI. No WebView or native
   library loading.
-- Each plugin surface is a full-content sidebar page.
+- Each plugin surface is a sidebar page with a left table-of-contents rail and
+  a single 800 px content column.
 - Plugins can call a fixed host API for workspace metadata, plugin-scoped
   storage, API metadata, and text-only model completions.
 - `npm run plugins` builds Node, Rust, Go, and Python examples into
@@ -117,8 +118,8 @@ Limits:
 - Navigating away sends `ui.close`; the plugin process stays alive.
 - `CodeEditor` is a native multiline syntax-highlighting node built on the
   existing file editor.
-- `PageTabs` is a native vertical tab rail with one content page. Plugin pages
-  use the full workspace body width; the old 880 px cap is gone.
+- `PageTabs` is a native table-of-contents rail with one content page. The
+  content column is capped at 800 px and stays a single vertical flow.
 
 ## Host API
 

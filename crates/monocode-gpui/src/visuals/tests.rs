@@ -478,9 +478,16 @@ fn remote_page_tabs_render_a_vertical_rail_and_forward_selection(cx: &mut TestAp
     });
     let visual = &mut gpui::VisualTestContext::from_window(window.into(), cx);
     visual.run_until_parked();
+    let first = visual
+        .debug_bounds("visual-page-tab-root/0-0")
+        .expect("the first rail item should render");
+    let panel = visual
+        .debug_bounds("visual-page-panel-root/0")
+        .expect("the page panel should render");
+    assert!(panel.origin.x > first.origin.x);
     assert!(
-        visual.debug_bounds("visual-page-tab-root/0-0").is_some(),
-        "the first rail item should render"
+        panel.size.width.as_f32() <= 800.,
+        "the content column should stay at or below 800 px"
     );
     let bounds = visual
         .debug_bounds("visual-page-tab-root/0-1")

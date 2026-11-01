@@ -32,7 +32,7 @@ command, or protocol code. A plugin's `ui.set` can change while it runs.
 The Editor tab loads a project file by path, shows it in a syntax-highlighted
 code editor, and writes it back. Paths must stay inside the active project.
 Editing is intentionally plain: save, then build/restart to test. All pages use
-a vertical rail on the left, and the station uses the full workspace width.
+a table-of-contents rail on the left and a single 800 px content column.
 
 ## Model assistance
 

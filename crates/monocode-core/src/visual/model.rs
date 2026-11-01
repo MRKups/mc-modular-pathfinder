@@ -225,9 +225,9 @@ pub enum Node {
         selected: usize,
         handler: String,
     },
-    /// A page shell with a vertical navigation rail on the left. `children`
-    /// holds the selected page's content (at most one child); the plugin sends
-    /// a new tree when `selected` changes. `nav_width` is in logical pixels.
+    /// A page shell with a table-of-contents rail on the left. `children` holds
+    /// the selected page's content (at most one child); the plugin sends a new
+    /// tree when `selected` changes. `nav_width` is in logical pixels.
     PageTabs {
         labels: Vec<String>,
         selected: usize,

@@ -252,10 +252,12 @@ Common nodes:
  "children":[{"kind":"text","text":"Page body","size":"body","color":"ink"}]}
 ```
 
-`page_tabs` is a vertical navigation rail on the left with one content child on
-the right. The plugin sends the selected page's content and republishes when the
-selection changes. `nav_width` is optional (default `210`, range `140–360`).
-Plugin pages use the full workspace body width; there is no built-in page cap.
+`page_tabs` is a documentation-style table of contents on the left with one
+content child on the right. The plugin sends the selected page's content and
+republishes when the selection changes. `nav_width` is optional (default `210`,
+range `140–360`). The content column is capped at `800` logical pixels so pages
+read as a single column instead of stretching across the workspace. Keep page
+content in one vertical flow; use rows only for compact control groups.
 
 Also available: `chart`, `gauge`, `donut`, `heatmap`, `progress`, `canvas`, and
 `scene`. Text sizes are `caption`, `small`, `body`, `subtitle`, `title`, `hero`.

@@ -187,8 +187,8 @@ When the user clicks a plugin row:
    numeric ids, validates it, and updates the surface's `VisualView`.
 5. The shell renders the plugin page in the workspace body and keeps the
    project tools panel available on the right.
-6. Plugin bodies use the full workspace body width. `PageTabs` provides a native
-   vertical navigation rail with one content page; there is no 880 px cap.
+6. `PageTabs` provides a native table-of-contents rail with one content page.
+   The content column is capped at 800 px and stays a single vertical flow.
 
 The host caches the last tree even while the surface is closed, so a plugin can
 continue work in the background and have a current tree ready when reopened.
@@ -341,8 +341,8 @@ MONOCODE_PLUGIN_DIR="$PWD/plugins" npm run native:dev
 
 - process discovery, spawning, handshake, shutdown, and crash visibility;
 - native declarative UI with interaction and live updates;
-- sidebar rows, full-content plugin pages, title-tab de-selection, and a
-  functional right project tools panel;
+- sidebar rows, plugin pages with table-of-contents rails, title-tab
+  de-selection, and a functional right project tools panel;
 - a fixed host API for workspace metadata, plugin-scoped storage, API
   metadata, and text-only model completions;
 - a native multiline code editor in the visual schema;

@@ -37,7 +37,7 @@ each marked with a small plug icon:
 Each one is an independent process built from `plugin-sources/<name>/`. Open
 them from the sidebar and interact with the controls; all state lives in the
 plugin process and every update crosses stdio. Every multi-page example uses
-the native `page_tabs` vertical rail.
+the native `page_tabs` table-of-contents rail and an 800 px content column.
 
 Plugin rows are ordered by the optional `order` field on each surface, then
 alphabetically by title. The examples set `order` to Dashboard, Workspace
@@ -80,8 +80,8 @@ scaffold templates for all four languages.
 
 - Plugins are trusted programs, not a security sandbox. They run with your
   permissions.
-- Every plugin surface is a sidebar page with a full-content body. There is no
-  plugin-specific width cap; use `page_tabs` for a left vertical page rail. There are no
-  plugin title tabs.
+- Every plugin surface is a sidebar page. Use `page_tabs` for a left
+  table-of-contents rail and a single 800 px content column. There are no plugin
+  title tabs.
 - A crashed plugin stays offline until the app restarts; its surface shows an
   offline/error state.

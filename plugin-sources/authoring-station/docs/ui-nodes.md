@@ -14,10 +14,11 @@ HTML, CSS, or JavaScript. The renderer is native GPUI.
  "children":[{"kind":"text","text":"Page body","size":"body","color":"ink"}]}
 ```
 
-`page_tabs` is a vertical tab rail plus one content child. Set `selected` to the
-active label and send a new tree when the user clicks another one. `nav_width`
-defaults to `210` and is clamped to `140–360`. The plugin page itself uses the
-full workspace body width; there is no 880 px cap.
+`page_tabs` is a table-of-contents rail plus one content child. Set `selected` to
+the active label and send a new tree when the user clicks another one.
+`nav_width` defaults to `210` and is clamped to `140–360`. The content column is
+capped at `800` logical pixels. Keep each page in one vertical flow; use rows
+only for compact control groups.
 
 ## Content
 

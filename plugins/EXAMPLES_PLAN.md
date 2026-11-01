@@ -44,7 +44,7 @@ that each have a real job.
 ### Debugging Station
 
 - Read-only. Never kills processes, changes sockets, or executes builds.
-- Left vertical pages: **Build**, **Processes**, **Network**, **System**.
+- Left table-of-contents rail: **Build**, **Processes**, **Network**, **System**.
 - Detects Node (npm, pnpm, yarn, bun), Cargo, Go modules, Python
   (pip, uv, poetry), Make, Task, Just, Maven, Gradle, CMake, Composer,
   Bundler, Deno, .NET, and Docker manifests up to four levels down.
@@ -71,7 +71,8 @@ Platform work completed:
 
 Authoring station features:
 
-- Wide layout with a left vertical rail: Guide, API, Scaffold, Generate, Editor.
+- Documentation-style layout: a left table-of-contents rail with Guide, API,
+  Scaffold, Generate, and Editor, plus a single 800 px content column.
 - Markdown docs render as native headings, prose, lists, tables, and code
   blocks, not as one long code field.
 - Live API/limits/features/provider tables from `host.describe` and
@@ -80,9 +81,9 @@ Authoring station features:
 - Scaffolds Node, Python, Rust, or Go plugins with manifest, source, README, and
   build files. Review shows every path before writing.
 - Loads and saves project files in the code editor.
-- Two-column Generate page: provider/system/prompt on the left, response on the
-  right. Sends one async `llm.complete` request and can copy the response into
-  the editor.
+- Single-column Generate page: provider, system prompt, prompt, and response.
+  Sends one async `llm.complete` request and can copy the response into the
+  editor.
 
 ## Resolved decisions
 

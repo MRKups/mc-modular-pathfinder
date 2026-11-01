@@ -5758,6 +5758,7 @@ impl Render for TranscriptView {
                 // The list holds its state borrow while delivering the event.
                 // Read the final scroll geometry in our trailing layout probe.
                 .set_scroll_handler(cx.listener(|this, _, _, cx| {
+                    this.reflow.scrolled();
                     this.selection.clear();
                     this.history_requested =
                         this.history_start > 0 || this.history_before.is_some();

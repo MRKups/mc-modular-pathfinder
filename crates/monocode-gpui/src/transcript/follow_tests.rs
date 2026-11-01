@@ -2297,6 +2297,75 @@ fn a_line_being_read_that_folds_into_the_work_line_keeps_the_reader_in_its_turn(
 }
 
 #[gpui::test]
+fn a_trimmed_final_message_keeps_the_reader_on_its_own_prose_not_its_actions(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| cx.set_reduce_motion(true));
+    let chat_with = |paragraphs: usize| {
+        vec![
+            row("user", "Question 0"),
+            row(
+                "assistant",
+                &"A long paragraph of prose.\n\n".repeat(paragraphs),
+            ),
+            row("user", "Question 1"),
+            row("assistant", &"Later answer.\n\n".repeat(40)),
+        ]
+    };
+    let window = chat_mode(cx, false);
+    window
+        .update(cx, |view, _, cx| {
+            view.visible = false;
+            view.patch(0, chat_with(40), cx);
+            view.visible = true;
+        })
+        .unwrap();
+    render(window, cx);
+    window
+        .update(cx, |view, _, _| {
+            let ix = view
+                .rows
+                .iter()
+                .rposition(|r| r.key.0 == 1 && matches!(r.body, Body::Markdown(_)))
+                .unwrap();
+            view.list.scroll_to(ListOffset {
+                item_ix: ix,
+                offset_in_item: px(0.),
+            });
+        })
+        .unwrap();
+    render(window, cx);
+    let read = window
+        .update(cx, |view, _, _| {
+            assert!(!view.list.is_following_tail());
+            view.rows[view.list.logical_scroll_top().item_ix].key
+        })
+        .unwrap();
+    // The patch drops the later prose of the message; its actions row keeps
+    // the same source index.
+    window
+        .update(cx, |view, _, cx| view.patch(0, chat_with(10), cx))
+        .unwrap();
+    render(window, cx);
+    window
+        .update(cx, |view, _, _| {
+            assert!(!view.rows.iter().any(|r| r.key == read));
+            assert!(
+                view.rows
+                    .iter()
+                    .any(|r| r.key.0 == 1 && matches!(r.body, Body::Actions { .. }))
+            );
+            let top = &view.rows[view.list.logical_scroll_top().item_ix];
+            assert!(
+                top.key.0 == 1 && matches!(top.body, Body::Markdown(_)),
+                "the reader moved from {read:?} to {:?}",
+                top.key
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
 fn long_user_messages_clamp_to_four_lines_until_shown_in_full(cx: &mut TestAppContext) {
     let lines = |n: usize| {
         (1..=n)

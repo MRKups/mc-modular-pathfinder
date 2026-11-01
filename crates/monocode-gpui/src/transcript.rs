@@ -3963,8 +3963,8 @@ impl TranscriptView {
                 let item_ix = self
                     .rows
                     .iter()
-                    .rposition(|r| in_turn(r) && r.key.0 <= key.0)
-                    .or_else(|| self.rows.iter().position(|r| in_turn(r) && r.key.0 > key.0));
+                    .rposition(|r| in_turn(r) && r.key <= key)
+                    .or_else(|| self.rows.iter().position(|r| in_turn(r) && r.key > key));
                 if let Some(item_ix) = item_ix {
                     self.list.scroll_to(ListOffset {
                         item_ix,

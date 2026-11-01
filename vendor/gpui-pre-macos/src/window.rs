@@ -658,6 +658,12 @@ unsafe fn apply_simple_fullscreen_plan(
 /// window is subscribed, so a longer silence means the link stopped.
 const FRAME_STALL: Duration = Duration::from_millis(500);
 const MAX_FRAME_RETRY: Duration = Duration::from_secs(2);
+/// Monocode: during a live resize AppKit redraws the layer itself through
+/// `displayLayer:`. Display link frames that land in between compete with it
+/// for the layer's two drawables, blocking the main thread in `nextDrawable`
+/// so the window edge stops following the pointer. Yield to the resize
+/// redraws while they keep coming; resume vsync frames once the pointer rests.
+const LIVE_RESIZE_YIELD: Duration = Duration::from_millis(50);
 
 /// When the window's display link last delivered a frame request.
 #[derive(Clone)]
@@ -698,6 +704,8 @@ struct MacWindowState {
     frame_ticks: FrameTicks,
     /// Set while a task is restarting this window's stalled frames.
     frame_recovery: Arc<AtomicBool>,
+    /// When AppKit last drew the layer through `displayLayer:`.
+    last_native_draw: Option<Instant>,
     renderer: renderer::Renderer,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     event_callback: Option<Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>>,
@@ -1181,6 +1189,7 @@ impl MacWindow {
                 frame_source: None,
                 frame_ticks: FrameTicks::new(),
                 frame_recovery: Arc::new(AtomicBool::new(false)),
+                last_native_draw: None,
                 renderer: renderer::new_renderer(
                     renderer_context,
                     native_window as *mut _,
@@ -3478,6 +3487,7 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
         let mut lock = window_state.lock();
         lock.request_frame_callback = Some(callback);
         lock.renderer.set_presents_with_transaction(false);
+        lock.last_native_draw = Some(Instant::now());
         lock.start_display_link();
     }
 }
@@ -3487,6 +3497,15 @@ extern "C" fn step(view: *mut c_void) {
     let window_state = unsafe { get_window_state(&*view) };
     let mut lock = window_state.lock();
     lock.frame_ticks.tick();
+
+    let in_live_resize: BOOL = unsafe { msg_send![view, inLiveResize] };
+    if in_live_resize == YES
+        && lock
+            .last_native_draw
+            .is_some_and(|drawn| drawn.elapsed() < LIVE_RESIZE_YIELD)
+    {
+        return;
+    }
 
     if let Some(mut callback) = lock.request_frame_callback.take() {
         let (signal_at, signal_source) = lock

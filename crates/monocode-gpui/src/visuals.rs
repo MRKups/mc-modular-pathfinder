@@ -44,7 +44,6 @@ pub(crate) struct VisualView {
     scene_drag: Option<(String, Point<Pixels>)>,
     inputs: HashMap<String, InputSlot>,
     editors: HashMap<String, CodeEditorSlot>,
-    editor_menu: Option<OpenEditorMenu>,
     active: HashSet<String>,
     revision: u64,
     scene_cache: HashMap<String, Rc<RefCell<Option<SceneCache>>>>,
@@ -86,14 +85,6 @@ struct CodeEditorSlot {
     syntax: Option<Arc<Mutex<Option<crate::editor_syntax::Session>>>>,
     _analysis: Option<Task<()>>,
     _subscriptions: Vec<gpui::Subscription>,
-}
-struct OpenEditorMenu {
-    editor_key: String,
-    anchor: Point<Pixels>,
-    selected_text: String,
-    fallback_handlers: Vec<String>,
-    menu: gpui::Entity<crate::popover::Menu>,
-    _events: gpui::Subscription,
 }
 struct SceneCache {
     revision: u64,
@@ -215,7 +206,6 @@ impl VisualView {
             scene_drag: None,
             inputs: HashMap::new(),
             editors: HashMap::new(),
-            editor_menu: None,
             active: HashSet::new(),
             revision: 0,
             scene_cache: HashMap::new(),
@@ -245,7 +235,6 @@ impl VisualView {
             scene_drag: None,
             inputs: HashMap::new(),
             editors: HashMap::new(),
-            editor_menu: None,
             active: HashSet::new(),
             revision: 0,
             scene_cache: HashMap::new(),
@@ -368,73 +357,6 @@ impl VisualView {
         }
         self.tree = Some(tree);
         self.error = None;
-    }
-    fn open_editor_menu(
-        &mut self,
-        key: &str,
-        at: Point<Pixels>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(slot) = self.editors.get(key) else {
-            return;
-        };
-        if slot.context_menu.is_empty() {
-            return;
-        }
-        let selected_text = slot.input.read(cx).selected_text();
-        let has_selection = !selected_text.trim().is_empty();
-        let mut items: Vec<crate::popover::MenuItem> = Vec::with_capacity(slot.context_menu.len());
-        let mut fallback_handlers = Vec::with_capacity(slot.context_menu.len());
-        for (idx, item) in slot.context_menu.iter().enumerate() {
-            let disabled = item.disabled || (item.requires_selection && !has_selection);
-            items.push(
-                crate::popover::MenuAction::new(format!("{idx}"), item.label.clone())
-                    .disabled(disabled)
-                    .into(),
-            );
-            fallback_handlers.push(item.handler.clone());
-        }
-        self.editor_menu = None;
-        let menu =
-            cx.new(|cx| crate::popover::Menu::new("Editor actions", items, window, cx).width(196.));
-        let events = cx.subscribe_in(
-            &menu,
-            window,
-            |this, _, event: &crate::popover::MenuEvent, _, cx| {
-                let Some(open) = this.editor_menu.take() else {
-                    return;
-                };
-                if let crate::popover::MenuEvent::Picked(id, _) = event
-                    && let Ok(index) = id.parse::<usize>()
-                {
-                    let live_handler = this
-                        .editors
-                        .get(&open.editor_key)
-                        .and_then(|slot| slot.context_menu.get(index))
-                        .map(|item| item.handler.clone())
-                        .or_else(|| open.fallback_handlers.get(index).cloned());
-                    if let Some(handler) = live_handler {
-                        let payload = if open.selected_text.is_empty() {
-                            Value::Null
-                        } else {
-                            json!(open.selected_text)
-                        };
-                        this.dispatch(&handler, payload, cx);
-                    }
-                }
-                cx.notify();
-            },
-        );
-        self.editor_menu = Some(OpenEditorMenu {
-            editor_key: key.to_owned(),
-            anchor: at,
-            selected_text,
-            fallback_handlers,
-            menu,
-            _events: events,
-        });
-        cx.notify();
     }
     fn sync_editor_selection(&mut self, key: &str, cx: &mut Context<Self>) {
         let next = {
@@ -1480,6 +1402,26 @@ impl VisualView {
                     this.dispatch(&handler, payload, cx);
                 },
             );
+            let menu_key = key.clone();
+            let menu_sub = cx.subscribe(
+                &input,
+                move |this, _, picked: &crate::input::CustomContextPicked, cx| {
+                    let Some(handler) = this
+                        .editors
+                        .get(&menu_key)
+                        .and_then(|slot| slot.context_menu.get(picked.index))
+                        .map(|item| item.handler.clone())
+                    else {
+                        return;
+                    };
+                    let payload = if picked.selected_text.is_empty() {
+                        Value::Null
+                    } else {
+                        json!(picked.selected_text)
+                    };
+                    this.dispatch(&handler, payload, cx);
+                },
+            );
             self.editors.insert(
                 key.clone(),
                 CodeEditorSlot {
@@ -1497,7 +1439,7 @@ impl VisualView {
                     path: path.clone(),
                     syntax,
                     _analysis: None,
-                    _subscriptions: vec![changed_sub, selection_sub, submit_sub],
+                    _subscriptions: vec![changed_sub, selection_sub, submit_sub, menu_sub],
                 },
             );
             self.analyze_editor(&key, value.clone(), cx);
@@ -1512,6 +1454,17 @@ impl VisualView {
             slot.submit_handler = submit_handler.clone();
             slot.selection_handler = selection_handler.clone();
             slot.context_menu = context_menu.clone();
+            let custom_items: Vec<crate::input::CustomContextAction> = context_menu
+                .iter()
+                .map(|item| crate::input::CustomContextAction {
+                    label: item.label.clone(),
+                    disabled: item.disabled,
+                    requires_selection: item.requires_selection,
+                })
+                .collect();
+            slot.input.update(cx, |input, _| {
+                input.set_custom_context_menu(custom_items);
+            });
             if (slot.height - *height).abs() > 0.5 || slot.read_only != *read_only {
                 slot.height = *height;
                 slot.read_only = *read_only;
@@ -1543,7 +1496,6 @@ impl VisualView {
             self.analyze_editor(&key, value.clone(), cx);
         }
         let input = self.editors[&key].input.clone();
-        let has_menu = !self.editors[&key].context_menu.is_empty();
         div()
             .id(SharedString::from(format!("visual-code-editor-{key}")))
             .debug_selector({
@@ -1559,16 +1511,6 @@ impl VisualView {
             .rounded_md()
             .border_1()
             .border_color(content(0.14))
-            .when(has_menu, |el| {
-                let menu_key = key.clone();
-                el.on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                        this.open_editor_menu(&menu_key, event.position, window, cx);
-                        cx.stop_propagation();
-                    }),
-                )
-            })
             .child(input)
             .into_any_element()
     }
@@ -1764,20 +1706,9 @@ impl Render for VisualView {
         };
         self.inputs.retain(|key, _| self.active.contains(key));
         self.editors.retain(|key, _| self.active.contains(key));
-        if self
-            .editor_menu
-            .as_ref()
-            .is_some_and(|open| !self.active.contains(&open.editor_key))
-        {
-            self.editor_menu = None;
-        }
         self.tracks.retain(|key, _| self.active.contains(key));
         self.orbits.retain(|key, _| self.active.contains(key));
         self.scene_cache.retain(|key, _| self.active.contains(key));
-        let popup = self.editor_menu.as_ref().map(|open| {
-            crate::popover::menu_popover(&open.menu, crate::popover::Anchor::Point(open.anchor), cx)
-                .gap(0.)
-        });
         let inline = self.inline.clone();
         // A visual in its own row is titled; placed in prose, it is captioned.
         let header = inline.is_none().then(|| {
@@ -1840,7 +1771,6 @@ impl Render for VisualView {
                     .text_color(content(0.5))
                     .child(caption.clone())
             }))
-            .children(popup)
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 if !event.dragging() {
                     this.slider_drag = None;

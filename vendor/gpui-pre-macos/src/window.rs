@@ -702,8 +702,11 @@ struct MacWindowState {
     cursor_visible: Arc<AtomicBool>,
     frame_source: Option<WindowFrameSource>,
     frame_ticks: FrameTicks,
-    /// Set while a task is restarting this window's stalled frames.
+    /// Set while a task is watching for, or restarting, stalled frames.
     frame_recovery: Arc<AtomicBool>,
+    /// Counts frame demands from GPUI, so a watcher can tell whether new
+    /// demand arrived while it was waiting.
+    frame_demands: Arc<AtomicU64>,
     /// When AppKit last drew the layer through `displayLayer:`.
     last_native_draw: Option<Instant>,
     renderer: renderer::Renderer,
@@ -1189,6 +1192,7 @@ impl MacWindow {
                 frame_source: None,
                 frame_ticks: FrameTicks::new(),
                 frame_recovery: Arc::new(AtomicBool::new(false)),
+                frame_demands: Arc::new(AtomicU64::new(0)),
                 last_native_draw: None,
                 renderer: renderer::new_renderer(
                     renderer_context,
@@ -1478,6 +1482,9 @@ impl Drop for MacWindow {
         // renderer's command queue are actually released with the window.
         drop(this.accesskit_adapter.take());
         this.renderer.destroy();
+        // Monocode: stop stalled-frame recovery and other deferred work from
+        // reviving the window between this drop and the deferred `close`.
+        this.closed.store(true, Ordering::Release);
         let window = this.native_window;
         let sheet_parent = this.sheet_parent.take();
         this.frame_source.take();
@@ -1502,11 +1509,6 @@ impl Drop for MacWindow {
     }
 }
 
-/// Calls `f` if the window is not closed.
-///
-/// This should be used when spawning foreground tasks interacting with the
-/// window, as some messages will end hard faulting if dispatched to no longer
-/// valid window handles.
 /// Restarts a window's display link until frames arrive again, backing off
 /// while the display stays unavailable. Stops once the window is hidden,
 /// closed, or drawing again.
@@ -1539,6 +1541,43 @@ async fn recover_stalled_frames(window: Weak<Mutex<MacWindowState>>) {
     }
 }
 
+/// Watches a window that GPUI wants a frame for, restarting its display link
+/// if no vsync tick arrives within a stall period. Keeps watching while new
+/// frame demands arrive, because GPUI only wakes the platform when a window
+/// turns dirty: a link that dies while the window is already dirty, or just
+/// before it turns dirty, gets no further wakeup.
+async fn watch_frames(
+    window: Weak<Mutex<MacWindowState>>,
+    ticks: FrameTicks,
+    demands: Arc<AtomicU64>,
+    watching: Arc<AtomicBool>,
+    executor: BackgroundExecutor,
+) {
+    loop {
+        let seen = demands.load(Ordering::Acquire);
+        if !ticks.stalled() {
+            executor.timer(FRAME_STALL).await;
+        }
+        if ticks.stalled() {
+            recover_stalled_frames(window.clone()).await;
+        }
+        if demands.load(Ordering::Acquire) != seen {
+            continue;
+        }
+        watching.store(false, Ordering::Release);
+        // A demand that landed after the check above saw `watching` still
+        // set and left; take the watch back for it unless another task has.
+        if demands.load(Ordering::Acquire) == seen || watching.swap(true, Ordering::AcqRel) {
+            return;
+        }
+    }
+}
+
+/// Calls `f` if the window is not closed.
+///
+/// This should be used when spawning foreground tasks interacting with the
+/// window, as some messages will end hard faulting if dispatched to no longer
+/// valid window handles.
 fn if_window_not_closed(closed: Arc<AtomicBool>, f: impl FnOnce()) {
     if !closed.load(Ordering::Acquire) {
         f();
@@ -2144,30 +2183,34 @@ impl PlatformWindow for MacWindow {
         self.0.as_ref().lock().request_frame_callback = Some(callback);
     }
 
-    // Monocode: GPUI calls this whenever the window needs a new frame. If the
-    // display link has gone quiet, nothing else would restart it until the
-    // window resizes, so the window keeps handling input while never
-    // repainting.
+    // Monocode: GPUI calls this when the window turns dirty or still needs
+    // frames after drawing one. If the display link has gone quiet, nothing
+    // else would restart it until the window resizes, so the window keeps
+    // handling input while never repainting.
     fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
         let state = self.0.lock();
         let ticks = state.frame_ticks.clone();
-        let recovering = state.frame_recovery.clone();
+        let watching = state.frame_recovery.clone();
+        let demands = state.frame_demands.clone();
         let executor = state.foreground_executor.clone();
+        let background = state.background_executor.clone();
         let window = Arc::downgrade(&self.0);
         drop(state);
         Some(Rc::new(move || {
-            if !ticks.stalled() || recovering.swap(true, Ordering::AcqRel) {
+            demands.fetch_add(1, Ordering::AcqRel);
+            if watching.swap(true, Ordering::AcqRel) {
                 return;
             }
             // Invalidation can happen inside an AppKit callback that holds
-            // the window state, so restart from a fresh main-thread task.
-            let window = window.clone();
-            let recovering = recovering.clone();
+            // the window state, so watch from a fresh main-thread task.
             executor
-                .spawn(async move {
-                    recover_stalled_frames(window).await;
-                    recovering.store(false, Ordering::Release);
-                })
+                .spawn(watch_frames(
+                    window.clone(),
+                    ticks.clone(),
+                    demands.clone(),
+                    watching.clone(),
+                    background.clone(),
+                ))
                 .detach();
         }))
     }

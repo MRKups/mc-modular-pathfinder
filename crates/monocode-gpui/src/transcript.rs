@@ -3041,6 +3041,11 @@ impl TranscriptView {
         let following = self.list.is_following_tail();
         let offset = self.list.logical_scroll_top();
         let anchor = self.rows.get(offset.item_ix).map(|r| r.key);
+        let anchor_turn = self
+            .rows
+            .get(offset.item_ix)
+            .and_then(|r| self.messages.get(r.message))
+            .map(|m| m.turn);
         let current_turn = self.source[..(start + 1).min(self.source.len())]
             .iter()
             .rposition(|r| r.is_prompt())
@@ -3941,13 +3946,32 @@ impl TranscriptView {
         }
         if following {
             self.list.scroll_to_end();
-        } else if let Some(key) = anchor
-            && let Some(item_ix) = self.rows.iter().position(|r| r.key == key)
-        {
-            self.list.scroll_to(ListOffset {
-                item_ix,
-                offset_in_item: offset.offset_in_item,
-            });
+        } else if let Some(key) = anchor {
+            if let Some(item_ix) = self.rows.iter().position(|r| r.key == key) {
+                self.list.scroll_to(ListOffset {
+                    item_ix,
+                    offset_in_item: offset.offset_in_item,
+                });
+            } else if let Some(turn) = anchor_turn {
+                // The row being read folded away, such as tool calls joining
+                // their turn's work line when the answer arrives. Stay in that
+                // turn, on the nearest surviving row at or above it, else the
+                // first below, rather than on whatever now holds the old
+                // index or the index GPUI's splice moved the scroll to.
+                let in_turn =
+                    |r: &UiRow| self.messages.get(r.message).is_some_and(|m| m.turn == turn);
+                let item_ix = self
+                    .rows
+                    .iter()
+                    .rposition(|r| in_turn(r) && r.key.0 <= key.0)
+                    .or_else(|| self.rows.iter().position(|r| in_turn(r) && r.key.0 > key.0));
+                if let Some(item_ix) = item_ix {
+                    self.list.scroll_to(ListOffset {
+                        item_ix,
+                        offset_in_item: px(0.),
+                    });
+                }
+            }
         }
         self.prune_reveals(now);
     }

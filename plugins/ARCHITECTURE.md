@@ -1,13 +1,12 @@
 # Monocode plugin architecture
 
-Status: protocol v1, four examples implemented.
+Status: protocol v1, three examples implemented.
 Scope: the native GPUI app (`crates/monocode-gpui`). Mobile and the legacy
 Tauri desktop are out of scope.
 
 This document explains how plugins are discovered, executed, rendered, and
 integrated into the app. For the wire contract see [PROTOCOL.md](PROTOCOL.md);
-for usage and examples see [README.md](README.md); for implementation notes see
-[PLAN.md](PLAN.md).
+for usage and examples see [README.md](README.md).
 
 ## 1. Shape
 
@@ -62,8 +61,7 @@ native visual schema, and the shell's navigation state.
 - **Thin integration.** The app starts the runtime only when a plugin directory
   exists. No plugin directory means no plugin process and no behavior change.
 - **Language agnostic.** `command` is an argv array. Any executable that speaks
-  the protocol can be a plugin. The examples use Node.js, Rust, Go, and
-  Python.
+  the protocol can be a plugin. The examples use Python, Rust, and Node.js.
 - **Fixed host surface.** Plugins get app data only through the explicit
   method table in `plugin_host/api.rs`, not by reaching into shell or store
   internals.
@@ -136,8 +134,6 @@ by `plugin_icon`, with `sparkles` as the default.
 - Python sources are syntax-checked and copied.
 - Rust sources are built with `cargo build --release`; `--locked` is used only
   when the source has a `Cargo.lock`. The binary is copied to
-  `plugins/<name>/bin/`.
-- Go sources are built with `go build`; the binary is copied to
   `plugins/<name>/bin/`.
 - `docs/` and `README.md` beside a source are copied into the package.
 
@@ -329,7 +325,7 @@ tool-free, but it is not a sandbox for the plugin process itself.
 | `crates/monocode-gpui/src/visuals.rs` | Remote-tree event forwarding, tree replacement, and code-editor rendering/events. |
 | `scripts/dev-native.test.mjs` | Native dev runner, including the adaptive Cargo job formula. |
 
-The four example packages are also probed directly over stdio for all surfaces
+The three example packages are also probed directly over stdio for all surfaces
 and native-tree validation. `npm run plugins:build` is the build check.
 
 Run the proof manually with:
@@ -348,5 +344,4 @@ MONOCODE_PLUGIN_DIR="$PWD/plugins" npm run native:dev
   metadata, and text-only model completions;
 - a native multiline code editor in the visual schema;
 - file-backed plugin state and stderr logs;
-- four purposeful examples: data dashboard, workspace analysis, debugging
-  station, and plugin authoring station.
+- three purposeful examples: notebook, workspace analysis, and plugin authoring.

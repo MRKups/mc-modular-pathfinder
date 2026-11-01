@@ -16,32 +16,30 @@ Build the plugin packages and launch Monocode with one command:
 npm run plugins
 ```
 
-It compiles the Rust and Go plugins, copies the Node and Python plugins, writes
+It compiles the Rust plugin, copies the Node and Python plugins, writes
 self-contained packages under `plugins/`, and launches the native dev app with
 `MONOCODE_PLUGIN_DIR` pointing at them. For a build-only run, use
 `npm run plugins:build`.
 
-Building the examples expects `node`, `cargo`, `go`, and Python 3 (`python3` or
+Building the examples expects `node`, `cargo`, and Python 3 (`python3` or
 `python` on PATH).
 
-The sidebar gains four plugin rows alongside Inbox, Notes and Automations,
+The sidebar gains three plugin rows alongside Inbox, Notes and Automations,
 each marked with a small plug icon:
 
 | Plugin | Language | What it does |
 |---|---|---|
-| **Notebook** | Python | Runs a persistent Python kernel with notebook cells, captured output, variables, and workspace data files |
-| **Workspace Analysis** | Rust | Reviews the current repository: languages, dependency counts, files, TODO markers, and toolchains |
-| **Debugger** | Go | Targets project processes and inspects their identity, state, command line, and open ports |
+| **Notebook** | Python | Runs a persistent Python kernel in a 3-column workbench with variables, continuous code sheet, and outputs |
+| **Workspace Analysis** | Rust | Reviews repository git activity, code churn, languages, dependencies, hotspots, and TODO markers |
 | **Plugin Authoring** | Node.js | Vertical docs/API/scaffold/generate/editor pages, a four-step scaffold wizard, and `llm.complete` |
 
 Each one is an independent process built from `plugin-sources/<name>/`. Open
 them from the sidebar and interact with the controls; all state lives in the
-plugin process and every update crosses stdio. Every multi-page example uses
-the native `page_tabs` table-of-contents rail and an 800 px content column.
+plugin process and every update crosses stdio.
 
 Plugin rows are ordered by the optional `order` field on each surface, then
 alphabetically by title. The examples set `order` to Notebook, Workspace
-Analysis, Debugger, Plugin Authoring.
+Analysis, Plugin Authoring.
 
 The authoring station can ask a configured provider for text through
 `llm.complete`. The host runs a separate, text-only, read-only session on a
@@ -71,10 +69,11 @@ With neither location populated, the app is unchanged.
 7. Exit on `shutdown`.
 
 See [PROTOCOL.md](PROTOCOL.md) for the complete contract, and
-[debugging-station/main.go](../plugin-sources/debugging-station/main.go) or
+[dashboard/main.py](../plugin-sources/dashboard/main.py),
+[workspace-analysis/src/main.rs](../plugin-sources/workspace-analysis/src/main.rs), or
 [authoring-station/index.js](../plugin-sources/authoring-station/index.js) for
 working implementations. The authoring plugin also bundles a doc browser and
-Node.js, Python, Rust, and Go scaffold templates.
+Node.js, Python, and Rust scaffold templates.
 
 ## Caveats
 

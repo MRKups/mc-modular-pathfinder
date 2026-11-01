@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 const SURFACE = "authoring-station";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DOCS_DIR = path.join(HERE, "docs");
-const LANGUAGES = ["Node.js", "Python", "Rust", "Go"];
+const LANGUAGES = ["Node.js", "Python", "Rust"];
 const TABS = ["Guide", "API", "Scaffold", "Generate", "Editor"];
 const STEPS = ["Identity", "Destination", "Review", "Created"];
 const METHOD_NOTES = {
@@ -563,84 +563,6 @@ fn main() {
 `;
 }
 
-function goTemplate(title) {
-  return `package main
-
-import (
-	"bufio"
-	"encoding/json"
-	"fmt"
-	"os"
-	"strings"
-)
-
-const surface = "main"
-
-var events = 0
-
-func send(message map[string]any) {
-	line, _ := json.Marshal(message)
-	fmt.Printf("%s\\n", line)
-}
-
-func tree() map[string]any {
-	return map[string]any{
-		"kind": "column",
-		"gap":  12,
-		"children": []any{
-			map[string]any{"kind": "text", "text": ${JSON.stringify(title)}, "size": "title", "color": "ink"},
-			map[string]any{"kind": "stat", "label": "Events", "value": fmt.Sprint(events), "color": "accent"},
-			map[string]any{"kind": "button", "label": "Ping", "handler": "ping", "disabled": false},
-		},
-	}
-}
-
-func notify(method string, params map[string]any) {
-	send(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
-}
-
-func publish() {
-	notify("ui.set", map[string]any{"surface": surface, "tree": tree()})
-}
-
-func main() {
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var message map[string]any
-		if json.Unmarshal([]byte(line), &message) != nil {
-			continue
-		}
-		method, _ := message["method"].(string)
-		switch method {
-		case "initialize":
-			send(map[string]any{
-				"jsonrpc": "2.0",
-				"id":      message["id"],
-				"result": map[string]any{
-					"protocol": 1,
-					"ui": []any{map[string]any{
-						"id": surface, "title": ${JSON.stringify(title)}, "icon": "sparkles", "order": 10,
-					}},
-				},
-			})
-			publish()
-		case "ui.open":
-			publish()
-		case "ui.event":
-			events++
-			publish()
-		case "shutdown":
-			return
-		}
-	}
-}
-`;
-}
-
 function scaffoldFiles(slug, title, pluginId, description, language) {
   const files = [];
   files.push({
@@ -672,18 +594,12 @@ function scaffoldFiles(slug, title, pluginId, description, language) {
     });
   } else if (language === 1) {
     files.push({ path: "main.py", content: pythonTemplate(title) });
-  } else if (language === 2) {
+  } else {
     files.push({
       path: "Cargo.toml",
       content: `[package]\nname = "${slug}"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\nserde_json = "1"\n\n[workspace]\n`,
     });
     files.push({ path: "src/main.rs", content: rustTemplate(title) });
-  } else {
-    files.push({
-      path: "go.mod",
-      content: `module monocode.example/${slug}\n\ngo 1.22\n`,
-    });
-    files.push({ path: "main.go", content: goTemplate(title) });
   }
   files.push({
     path: "README.md",
@@ -726,9 +642,7 @@ function createScaffold() {
         ? "index.js"
         : state.scaffold.language === 1
           ? "main.py"
-          : state.scaffold.language === 2
-            ? "src/main.rs"
-            : "main.go";
+          : "src/main.rs";
     state.scaffold.files = files.map((file) => ({
       path: path.posix.join(targetInput, file.path),
       bytes: Buffer.byteLength(file.content),
@@ -1047,8 +961,7 @@ function scaffoldPreviewFiles() {
   const files = ["plugin.json", "README.md"];
   if (language === 0) files.push("index.js", "package.json");
   else if (language === 1) files.push("main.py");
-  else if (language === 2) files.push("Cargo.toml", "src/main.rs");
-  else files.push("go.mod", "main.go");
+  else files.push("Cargo.toml", "src/main.rs");
   return files.map((file) => [path.posix.join(target, file), "generated"]);
 }
 
@@ -1225,7 +1138,7 @@ scanner.on("line", (line) => {
             id: SURFACE,
             title: "Plugin Authoring",
             icon: "plug",
-            order: 4,
+            order: 3,
           },
         ],
       });

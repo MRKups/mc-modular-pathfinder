@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Build the example plugins from plugin-sources/ into self-contained packages
-// under plugins/. Node and Python sources are copied; Rust and Go sources are
+// under plugins/. Node and Python sources are copied; Rust sources are
 // compiled.
 //
 // Run `npm run plugins` to build and launch, or `npm run plugins:build` to
@@ -86,13 +86,6 @@ function buildPlugin(name, source, pluginDir) {
     }
     copyBinary(binary, join(pluginDir, "bin", `${name}${executable}`));
     manifest.command = [`./bin/${name}${executable}`];
-  } else if (existsSync(join(source, "go.mod"))) {
-    kind = "go";
-    const binary = join(pluginDir, "bin", `${name}${executable}`);
-    mkdirSync(join(pluginDir, "bin"), { recursive: true });
-    run("go", ["build", "-o", binary, "."], { cwd: source });
-    chmodSync(binary, 0o755);
-    manifest.command = [`./bin/${name}${executable}`];
   } else if (existsSync(join(source, "main.py"))) {
     kind = "python";
     const python = findPython();
@@ -112,7 +105,7 @@ function buildPlugin(name, source, pluginDir) {
     manifest.command = ["node", "index.js"];
   } else {
     throw new Error(
-      `Cannot determine how to build ${name}: add Cargo.toml, go.mod, main.py, or index.js`,
+      `Cannot determine how to build ${name}: add Cargo.toml, main.py, or index.js`,
     );
   }
 
